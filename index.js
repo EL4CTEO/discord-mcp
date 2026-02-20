@@ -7,6 +7,23 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { Client, GatewayIntentBits, ChannelType } from "discord.js";
+import { readFileSync, writeFileSync, existsSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const CONFIG_PATH = join(__dirname, ".discord-mcp-config.json");
+
+function loadConfig() {
+  if (existsSync(CONFIG_PATH)) {
+    try { return JSON.parse(readFileSync(CONFIG_PATH, "utf8")); } catch {}
+  }
+  return {};
+}
+
+function saveConfig(config) {
+  writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+}
 
 const BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 if (!BOT_TOKEN) {
@@ -28,6 +45,13 @@ const discord = new Client({
 await discord.login(BOT_TOKEN);
 await new Promise((resolve) => discord.once("ready", resolve));
 
+function resolveGuildId(args) {
+  if (args.guild_id) return args.guild_id;
+  const config = loadConfig();
+  if (config.default_guild_id) return config.default_guild_id;
+  throw new Error("No guild_id provided and no default guild set. Use set_guild first.");
+}
+
 function getGuild(guildId) {
   const guild = discord.guilds.cache.get(guildId);
   if (!guild) throw new Error(`Guild ${guildId} not found or bot is not in this server`);
@@ -36,17 +60,44 @@ function getGuild(guildId) {
 
 const tools = [
   {
+    name: "set_guild",
+    description: "Set the default guild (server) ID so you don't need to specify it every time",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guild_id: { type: "string", description: "The Discord server ID to set as default" },
+      },
+      required: ["guild_id"],
+    },
+  },
+  {
+    name: "get_guild",
+    description: "Get the currently set default guild ID",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+  },
+  {
+    name: "list_guilds",
+    description: "List all Discord servers the bot is currently in",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+  },
+  {
     name: "create_channel",
     description: "Create a single text channel in a guild",
     inputSchema: {
       type: "object",
       properties: {
-        guild_id: { type: "string", description: "Discord server ID" },
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
         name: { type: "string", description: "Channel name" },
         category_id: { type: "string", description: "Parent category ID (optional)" },
         topic: { type: "string", description: "Channel topic (optional)" },
       },
-      required: ["guild_id", "name"],
+      required: ["name"],
     },
   },
   {
@@ -55,10 +106,10 @@ const tools = [
     inputSchema: {
       type: "object",
       properties: {
-        guild_id: { type: "string" },
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
         name: { type: "string" },
       },
-      required: ["guild_id", "name"],
+      required: ["name"],
     },
   },
   {
@@ -67,12 +118,12 @@ const tools = [
     inputSchema: {
       type: "object",
       properties: {
-        guild_id: { type: "string" },
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
         name: { type: "string" },
         category_id: { type: "string", description: "Parent category ID (optional)" },
         user_limit: { type: "number", description: "Max users (0 = unlimited)" },
       },
-      required: ["guild_id", "name"],
+      required: ["name"],
     },
   },
   {
@@ -81,7 +132,7 @@ const tools = [
     inputSchema: {
       type: "object",
       properties: {
-        guild_id: { type: "string" },
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
         channels: {
           type: "array",
           items: {
@@ -95,7 +146,7 @@ const tools = [
           },
         },
       },
-      required: ["guild_id", "channels"],
+      required: ["channels"],
     },
   },
   {
@@ -104,10 +155,10 @@ const tools = [
     inputSchema: {
       type: "object",
       properties: {
-        guild_id: { type: "string" },
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
         names: { type: "array", items: { type: "string" } },
       },
-      required: ["guild_id", "names"],
+      required: ["names"],
     },
   },
   {
@@ -116,7 +167,7 @@ const tools = [
     inputSchema: {
       type: "object",
       properties: {
-        guild_id: { type: "string" },
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
         channels: {
           type: "array",
           items: {
@@ -130,7 +181,7 @@ const tools = [
           },
         },
       },
-      required: ["guild_id", "channels"],
+      required: ["channels"],
     },
   },
   {
@@ -139,10 +190,10 @@ const tools = [
     inputSchema: {
       type: "object",
       properties: {
-        guild_id: { type: "string" },
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
         channel_id: { type: "string" },
       },
-      required: ["guild_id", "channel_id"],
+      required: ["channel_id"],
     },
   },
   {
@@ -151,10 +202,10 @@ const tools = [
     inputSchema: {
       type: "object",
       properties: {
-        guild_id: { type: "string" },
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
         channel_ids: { type: "array", items: { type: "string" } },
       },
-      required: ["guild_id", "channel_ids"],
+      required: ["channel_ids"],
     },
   },
   {
@@ -163,9 +214,8 @@ const tools = [
     inputSchema: {
       type: "object",
       properties: {
-        guild_id: { type: "string" },
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
       },
-      required: ["guild_id"],
     },
   },
   {
@@ -174,11 +224,11 @@ const tools = [
     inputSchema: {
       type: "object",
       properties: {
-        guild_id: { type: "string" },
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
         channel_id: { type: "string" },
         limit: { type: "number", description: "Number of messages to fetch (max 500, default 100)" },
       },
-      required: ["guild_id", "channel_id"],
+      required: ["channel_id"],
     },
   },
   {
@@ -187,11 +237,11 @@ const tools = [
     inputSchema: {
       type: "object",
       properties: {
-        guild_id: { type: "string" },
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
         user_id: { type: "string" },
         limit: { type: "number", description: "Messages per channel to scan (max 200, default 100)" },
       },
-      required: ["guild_id", "user_id"],
+      required: ["user_id"],
     },
   },
   {
@@ -200,12 +250,12 @@ const tools = [
     inputSchema: {
       type: "object",
       properties: {
-        guild_id: { type: "string" },
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
         user_id: { type: "string" },
         reason: { type: "string" },
         delete_message_days: { type: "number", description: "Days of messages to delete (0-7)" },
       },
-      required: ["guild_id", "user_id"],
+      required: ["user_id"],
     },
   },
   {
@@ -214,12 +264,12 @@ const tools = [
     inputSchema: {
       type: "object",
       properties: {
-        guild_id: { type: "string" },
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
         user_id: { type: "string" },
         duration_minutes: { type: "number", description: "Timeout duration in minutes" },
         reason: { type: "string" },
       },
-      required: ["guild_id", "user_id", "duration_minutes"],
+      required: ["user_id", "duration_minutes"],
     },
   },
   {
@@ -228,12 +278,12 @@ const tools = [
     inputSchema: {
       type: "object",
       properties: {
-        guild_id: { type: "string" },
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
         user_ids: { type: "array", items: { type: "string" } },
         reason: { type: "string" },
         delete_message_days: { type: "number" },
       },
-      required: ["guild_id", "user_ids"],
+      required: ["user_ids"],
     },
   },
   {
@@ -242,18 +292,53 @@ const tools = [
     inputSchema: {
       type: "object",
       properties: {
-        guild_id: { type: "string" },
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
         user_ids: { type: "array", items: { type: "string" } },
         duration_minutes: { type: "number" },
         reason: { type: "string" },
       },
-      required: ["guild_id", "user_ids", "duration_minutes"],
+      required: ["user_ids", "duration_minutes"],
     },
   },
 ];
 
 async function handleTool(name, args) {
-  const guild = getGuild(args.guild_id);
+  switch (name) {
+    case "set_guild": {
+      const guild = getGuild(args.guild_id);
+      const config = loadConfig();
+      config.default_guild_id = args.guild_id;
+      saveConfig(config);
+      return { success: true, default_guild_id: args.guild_id, guild_name: guild.name };
+    }
+
+    case "get_guild": {
+      const config = loadConfig();
+      if (!config.default_guild_id) return { default_guild_id: null, message: "No default guild set. Use set_guild to set one." };
+      try {
+        const guild = getGuild(config.default_guild_id);
+        return { default_guild_id: config.default_guild_id, guild_name: guild.name, member_count: guild.memberCount };
+      } catch {
+        return { default_guild_id: config.default_guild_id, message: "Guild saved but bot may no longer be in it" };
+      }
+    }
+
+    case "list_guilds": {
+      const config = loadConfig();
+      return {
+        guilds: discord.guilds.cache.map((g) => ({
+          id: g.id,
+          name: g.name,
+          member_count: g.memberCount,
+          is_default: g.id === config.default_guild_id,
+        })),
+        default_guild_id: config.default_guild_id || null,
+      };
+    }
+  }
+
+  const guildId = resolveGuildId(args);
+  const guild = getGuild(guildId);
 
   switch (name) {
     case "create_channel": {
