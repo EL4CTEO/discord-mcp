@@ -70,6 +70,25 @@ function getGuild(guildId) {
   return guild;
 }
 
+// Resolves a user_id that can be either a snowflake ID or a username/display name
+async function resolveMember(guild, userIdOrName) {
+  const isSnowflake = /^\d{17,20}$/.test(userIdOrName);
+  if (isSnowflake) {
+    return await guild.members.fetch(userIdOrName);
+  }
+  // Search by username or display name (case-insensitive)
+  await guild.members.fetch();
+  const lower = userIdOrName.toLowerCase();
+  const member = guild.members.cache.find(
+    (m) =>
+      m.user.username.toLowerCase() === lower ||
+      m.displayName.toLowerCase() === lower ||
+      (m.user.globalName && m.user.globalName.toLowerCase() === lower)
+  );
+  if (!member) throw new Error(`User "${userIdOrName}" not found in this server`);
+  return member;
+}
+
 const tools = [
   {
     name: "set_guild",
@@ -355,12 +374,12 @@ const tools = [
   },
   {
     name: "user_analysis",
-    description: "Analyze a user in a server",
+    description: "Analyze a user in a server. Accepts either a snowflake ID or a username/display name.",
     inputSchema: {
       type: "object",
       properties: {
         guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
-        user_id: { type: "string" },
+        user_id: { type: "string", description: "User snowflake ID or username (e.g. 'gentyg')" },
         limit: { type: "number" },
       },
       required: ["user_id"],
@@ -591,7 +610,7 @@ async function handleTool(name, args) {
       const channel = guild.channels.cache.get(args.channel_id);
       if (!channel) throw new Error(`Channel ${args.channel_id} not found`);
       if (!channel.isTextBased()) throw new Error("Channel is not text-based");
-      const limit = Math.min(args.limit || 100, 500);
+      const limit = Math.min(args.limit || 100, 100);
       const messages = await channel.messages.fetch({ limit });
       const authorMap = {}, wordFreq = {};
       let totalWords = 0, totalChars = 0, hasAttachments = 0, hasEmbeds = 0, botMessages = 0;
@@ -617,8 +636,7 @@ async function handleTool(name, args) {
       };
     }
     case "user_analysis": {
-      const member = await guild.members.fetch(args.user_id);
-      if (!member) throw new Error(`User ${args.user_id} not found`);
+      const member = await resolveMember(guild, args.user_id);
       const textChannels = guild.channels.cache.filter((c) => c.type === ChannelType.GuildText && c.viewable);
       const limit = Math.min(args.limit || 100, 200);
       const channelStats = [], recentMessages = [], wordFreq = {};
@@ -626,7 +644,7 @@ async function handleTool(name, args) {
       for (const [, channel] of textChannels) {
         try {
           const messages = await channel.messages.fetch({ limit });
-          const userMessages = messages.filter((m) => m.author.id === args.user_id);
+          const userMessages = messages.filter((m) => m.author.id === member.id);
           if (userMessages.size === 0) continue;
           totalMessages += userMessages.size;
           let chWords = 0;
