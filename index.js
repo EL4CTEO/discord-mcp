@@ -70,13 +70,11 @@ function getGuild(guildId) {
   return guild;
 }
 
-// Resolves a user_id that can be either a snowflake ID or a username/display name
 async function resolveMember(guild, userIdOrName) {
   const isSnowflake = /^\d{17,20}$/.test(userIdOrName);
   if (isSnowflake) {
     return await guild.members.fetch(userIdOrName);
   }
-  // Search by username or display name (case-insensitive)
   await guild.members.fetch();
   const lower = userIdOrName.toLowerCase();
   const member = guild.members.cache.find(
@@ -87,6 +85,26 @@ async function resolveMember(guild, userIdOrName) {
   );
   if (!member) throw new Error(`User "${userIdOrName}" not found in this server`);
   return member;
+}
+
+// Fetch a thread by ID — works for both active and archived threads
+async function fetchThread(guild, threadId) {
+  // Check active threads in cache first
+  const cached = guild.channels.cache.get(threadId);
+  if (cached && cached.isThread()) return cached;
+
+  // Try fetching directly (works for active threads the bot can see)
+  try {
+    const fetched = await discord.channels.fetch(threadId);
+    if (fetched && fetched.isThread()) return fetched;
+  } catch {}
+
+  // Search active threads across all channels
+  const activeThreads = await guild.channels.fetchActiveThreads();
+  const active = activeThreads.threads.get(threadId);
+  if (active) return active;
+
+  throw new Error(`Thread ${threadId} not found or bot cannot access it`);
 }
 
 const tools = [
@@ -385,6 +403,76 @@ const tools = [
       required: ["user_id"],
     },
   },
+  // ── THREAD TOOLS ──────────────────────────────────────────────────────────
+  {
+    name: "create_thread",
+    description: "Create a thread inside a text channel. Can be attached to an existing message or standalone (forum/news threads).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
+        channel_id: { type: "string", description: "The parent channel ID" },
+        name: { type: "string", description: "Thread name" },
+        message_id: { type: "string", description: "Message ID to attach the thread to (optional — omit for standalone thread)" },
+        auto_archive_duration: { type: "number", description: "Minutes before auto-archive: 60, 1440, 4320, or 10080 (default: 1440)" },
+        reason: { type: "string", description: "Audit log reason" },
+      },
+      required: ["channel_id", "name"],
+    },
+  },
+  {
+    name: "send_thread_message",
+    description: "Send a message inside a thread",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
+        thread_id: { type: "string", description: "The thread ID" },
+        content: { type: "string", description: "Message content" },
+      },
+      required: ["thread_id", "content"],
+    },
+  },
+  {
+    name: "thread_analysis",
+    description: "Read and analyze all messages in a thread",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
+        thread_id: { type: "string", description: "The thread ID to analyze" },
+        limit: { type: "number", description: "Max messages to fetch (default: 100)" },
+      },
+      required: ["thread_id"],
+    },
+  },
+  {
+    name: "list_threads",
+    description: "List active (and optionally archived) threads in a channel",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
+        channel_id: { type: "string", description: "Parent channel ID (omit to list all active threads in the guild)" },
+        include_archived: { type: "boolean", description: "Include archived threads (default: false)" },
+      },
+    },
+  },
+  {
+    name: "archive_thread",
+    description: "Archive (or unarchive) a thread",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
+        thread_id: { type: "string", description: "The thread ID" },
+        archived: { type: "boolean", description: "true to archive, false to unarchive (default: true)" },
+        locked: { type: "boolean", description: "Whether to also lock the thread (default: false)" },
+      },
+      required: ["thread_id"],
+    },
+  },
+  // ── MODERATION ────────────────────────────────────────────────────────────
   {
     name: "ban_user",
     description: "Ban a single user from a guild",
@@ -669,6 +757,91 @@ async function handleTool(name, args) {
         activity_by_channel: channelStats.sort((a, b) => b.message_count - a.message_count),
       };
     }
+
+    // ── THREAD HANDLERS ───────────────────────────────────────────────────
+    case "create_thread": {
+      const channel = guild.channels.cache.get(args.channel_id);
+      if (!channel) throw new Error(`Channel ${args.channel_id} not found`);
+      const autoArchiveDuration = args.auto_archive_duration || 1440;
+      let thread;
+      if (args.message_id) {
+        if (!channel.isTextBased()) throw new Error("Channel is not text-based");
+        const msg = await channel.messages.fetch(args.message_id);
+        thread = await msg.startThread({ name: args.name, autoArchiveDuration, reason: args.reason || null });
+      } else {
+        thread = await channel.threads.create({ name: args.name, autoArchiveDuration, reason: args.reason || null });
+      }
+      return { thread_id: thread.id, name: thread.name, parent_id: thread.parentId, auto_archive_duration: thread.autoArchiveDuration, archived: thread.archived, locked: thread.locked };
+    }
+    case "send_thread_message": {
+      const thread = await fetchThread(guild, args.thread_id);
+      const msg = await thread.send(args.content);
+      return { message_id: msg.id, thread_id: args.thread_id, content: args.content };
+    }
+    case "thread_analysis": {
+      const thread = await fetchThread(guild, args.thread_id);
+      const limit = Math.min(args.limit || 100, 100);
+      const messages = await thread.messages.fetch({ limit });
+      const authorMap = {}, wordFreq = {};
+      let totalWords = 0, totalChars = 0, botMessages = 0;
+      const allMessages = [];
+      messages.forEach((msg) => {
+        if (msg.author.bot) { botMessages++; return; }
+        authorMap[msg.author.username] = (authorMap[msg.author.username] || 0) + 1;
+        const words = msg.content.split(/\s+/).filter(Boolean);
+        totalWords += words.length; totalChars += msg.content.length;
+        words.forEach((w) => { const lw = w.toLowerCase().replace(/[^a-z0-9]/g, ""); if (lw.length > 2) wordFreq[lw] = (wordFreq[lw] || 0) + 1; });
+        allMessages.push({ author: msg.author.username, content: msg.content.slice(0, 500), timestamp: msg.createdAt });
+      });
+      const humanMessages = messages.size - botMessages;
+      return {
+        thread_id: thread.id, thread_name: thread.name,
+        parent_channel_id: thread.parentId, archived: thread.archived, locked: thread.locked,
+        messages_analyzed: messages.size, human_messages: humanMessages, bot_messages: botMessages,
+        date_range: { from: messages.last()?.createdAt, to: messages.first()?.createdAt },
+        total_words: totalWords, total_characters: totalChars,
+        avg_words_per_message: (totalWords / (humanMessages || 1)).toFixed(2),
+        top_users: Object.entries(authorMap).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([user, count]) => ({ user, messages: count })),
+        top_words: Object.entries(wordFreq).sort((a, b) => b[1] - a[1]).slice(0, 20).map(([word, count]) => ({ word, count })),
+        messages: allMessages.reverse(),
+      };
+    }
+    case "list_threads": {
+      const activeThreads = await guild.channels.fetchActiveThreads();
+      let threads = [...activeThreads.threads.values()];
+      if (args.channel_id) threads = threads.filter((t) => t.parentId === args.channel_id);
+      const result = threads.map((t) => ({
+        thread_id: t.id, name: t.name, parent_channel_id: t.parentId,
+        archived: t.archived, locked: t.locked,
+        member_count: t.memberCount, message_count: t.messageCount,
+        auto_archive_duration: t.autoArchiveDuration, created_at: t.createdAt,
+      }));
+      if (args.include_archived && args.channel_id) {
+        try {
+          const parentChannel = guild.channels.cache.get(args.channel_id);
+          if (parentChannel && parentChannel.threads) {
+            const archived = await parentChannel.threads.fetchArchived();
+            archived.threads.forEach((t) => {
+              result.push({
+                thread_id: t.id, name: t.name, parent_channel_id: t.parentId,
+                archived: true, locked: t.locked,
+                member_count: t.memberCount, message_count: t.messageCount,
+                auto_archive_duration: t.autoArchiveDuration, created_at: t.createdAt,
+              });
+            });
+          }
+        } catch {}
+      }
+      return { total: result.length, threads: result };
+    }
+    case "archive_thread": {
+      const thread = await fetchThread(guild, args.thread_id);
+      const archived = args.archived !== undefined ? args.archived : true;
+      const locked = args.locked || false;
+      await thread.edit({ archived, locked });
+      return { thread_id: thread.id, name: thread.name, archived, locked };
+    }
+
     case "ban_user": {
       await guild.members.ban(args.user_id, { reason: args.reason || "No reason provided", deleteMessageDays: args.delete_message_days || 0 });
       return { banned: args.user_id, reason: args.reason || "No reason provided" };
