@@ -1,0 +1,20 @@
+{
+  "name": "discord-mcp",
+  "version": "1.0.0",
+  "description": "Extensive Discord MCP server for Claude",
+  "main": "index.js",
+  "bin": {
+    "discord-mcp": "index.js"
+  },
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "discord.js": "^14.14.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
