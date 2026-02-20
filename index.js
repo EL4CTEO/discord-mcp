@@ -42,14 +42,12 @@ const discord = new Client({
   ],
 });
 
-// Start Discord login in background — don't await it here
 const discordReady = new Promise((resolve, reject) => {
   discord.once("ready", resolve);
   discord.once("error", reject);
   discord.login(BOT_TOKEN).catch(reject);
 });
 
-// Start MCP server immediately without waiting for Discord
 const server = new Server(
   { name: "discord-mcp", version: "1.0.0" },
   { capabilities: { tools: {} } }
@@ -206,6 +204,130 @@ const tools = [
         channel_ids: { type: "array", items: { type: "string" } },
       },
       required: ["channel_ids"],
+    },
+  },
+  {
+    name: "send_message",
+    description: "Send a message to a specific channel",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
+        channel_id: { type: "string", description: "The channel ID to send the message to" },
+        content: { type: "string", description: "The message content" },
+      },
+      required: ["channel_id", "content"],
+    },
+  },
+  {
+    name: "mass_send_message",
+    description: "Send messages to multiple channels in parallel",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
+        messages: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              channel_id: { type: "string" },
+              content: { type: "string" },
+            },
+            required: ["channel_id", "content"],
+          },
+        },
+      },
+      required: ["messages"],
+    },
+  },
+  {
+    name: "delete_message",
+    description: "Delete a specific message from a channel",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
+        channel_id: { type: "string", description: "The channel ID containing the message" },
+        message_id: { type: "string", description: "The message ID to delete" },
+      },
+      required: ["channel_id", "message_id"],
+    },
+  },
+  {
+    name: "mass_delete_message",
+    description: "Delete multiple messages from a channel in parallel",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
+        channel_id: { type: "string", description: "The channel ID containing the messages" },
+        message_ids: { type: "array", items: { type: "string" }, description: "Array of message IDs to delete" },
+      },
+      required: ["channel_id", "message_ids"],
+    },
+  },
+  {
+    name: "create_role",
+    description: "Create a single role in a guild",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
+        name: { type: "string", description: "Role name" },
+        color: { type: "string", description: "Hex color code (e.g. #FF0000)" },
+        hoist: { type: "boolean", description: "Whether the role should be displayed separately in the member list" },
+        mentionable: { type: "boolean", description: "Whether the role should be mentionable" },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "delete_role",
+    description: "Delete a single role from a guild",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
+        role_id: { type: "string", description: "The role ID to delete" },
+      },
+      required: ["role_id"],
+    },
+  },
+  {
+    name: "mass_create_role",
+    description: "Create multiple roles in parallel",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
+        roles: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              color: { type: "string" },
+              hoist: { type: "boolean" },
+              mentionable: { type: "boolean" },
+            },
+            required: ["name"],
+          },
+        },
+      },
+      required: ["roles"],
+    },
+  },
+  {
+    name: "mass_delete_role",
+    description: "Delete multiple roles in parallel",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
+        role_ids: { type: "array", items: { type: "string" }, description: "Array of role IDs to delete" },
+      },
+      required: ["role_ids"],
     },
   },
   {
@@ -375,6 +497,77 @@ async function handleTool(name, args) {
     case "mass_delete": {
       const results = await Promise.allSettled(args.channel_ids.map(async (id) => { const ch = guild.channels.cache.get(id); if (!ch) throw new Error(`Channel ${id} not found`); const n = ch.name; await ch.delete(); return { id, name: n }; }));
       return results.map((r, i) => r.status === "fulfilled" ? { id: args.channel_ids[i], name: r.value.name, status: "deleted" } : { id: args.channel_ids[i], status: "failed", error: r.reason?.message });
+    }
+    case "send_message": {
+      const channel = guild.channels.cache.get(args.channel_id);
+      if (!channel) throw new Error(`Channel ${args.channel_id} not found`);
+      if (!channel.isTextBased()) throw new Error("Channel is not text-based");
+      const msg = await channel.send(args.content);
+      return { message_id: msg.id, channel_id: args.channel_id, content: args.content };
+    }
+    case "mass_send_message": {
+      const results = await Promise.allSettled(args.messages.map(async (m) => {
+        const channel = guild.channels.cache.get(m.channel_id);
+        if (!channel) throw new Error(`Channel ${m.channel_id} not found`);
+        if (!channel.isTextBased()) throw new Error("Channel is not text-based");
+        const msg = await channel.send(m.content);
+        return { message_id: msg.id, channel_id: m.channel_id };
+      }));
+      return results.map((r, i) => r.status === "fulfilled" ? { channel_id: args.messages[i].channel_id, message_id: r.value.message_id, status: "sent" } : { channel_id: args.messages[i].channel_id, status: "failed", error: r.reason?.message });
+    }
+    case "delete_message": {
+      const channel = guild.channels.cache.get(args.channel_id);
+      if (!channel) throw new Error(`Channel ${args.channel_id} not found`);
+      if (!channel.isTextBased()) throw new Error("Channel is not text-based");
+      const msg = await channel.messages.fetch(args.message_id);
+      await msg.delete();
+      return { deleted_message_id: args.message_id, channel_id: args.channel_id };
+    }
+    case "mass_delete_message": {
+      const channel = guild.channels.cache.get(args.channel_id);
+      if (!channel) throw new Error(`Channel ${args.channel_id} not found`);
+      if (!channel.isTextBased()) throw new Error("Channel is not text-based");
+      const results = await Promise.allSettled(args.message_ids.map(async (id) => {
+        const msg = await channel.messages.fetch(id);
+        await msg.delete();
+        return id;
+      }));
+      return results.map((r, i) => r.status === "fulfilled" ? { message_id: args.message_ids[i], status: "deleted" } : { message_id: args.message_ids[i], status: "failed", error: r.reason?.message });
+    }
+    case "create_role": {
+      const role = await guild.roles.create({
+        name: args.name,
+        color: args.color || null,
+        hoist: args.hoist || false,
+        mentionable: args.mentionable || false,
+      });
+      return { id: role.id, name: role.name, color: role.hexColor, hoist: role.hoist, mentionable: role.mentionable };
+    }
+    case "delete_role": {
+      const role = guild.roles.cache.get(args.role_id);
+      if (!role) throw new Error(`Role ${args.role_id} not found`);
+      const roleName = role.name;
+      await role.delete();
+      return { deleted: args.role_id, name: roleName };
+    }
+    case "mass_create_role": {
+      const results = await Promise.allSettled(args.roles.map((r) => guild.roles.create({
+        name: r.name,
+        color: r.color || null,
+        hoist: r.hoist || false,
+        mentionable: r.mentionable || false,
+      })));
+      return results.map((r, i) => r.status === "fulfilled" ? { name: args.roles[i].name, id: r.value.id, status: "created" } : { name: args.roles[i].name, status: "failed", error: r.reason?.message });
+    }
+    case "mass_delete_role": {
+      const results = await Promise.allSettled(args.role_ids.map(async (id) => {
+        const role = guild.roles.cache.get(id);
+        if (!role) throw new Error(`Role ${id} not found`);
+        const n = role.name;
+        await role.delete();
+        return { id, name: n };
+      }));
+      return results.map((r, i) => r.status === "fulfilled" ? { id: args.role_ids[i], name: r.value.name, status: "deleted" } : { id: args.role_ids[i], status: "failed", error: r.reason?.message });
     }
     case "server_analysis": {
       await guild.members.fetch();
