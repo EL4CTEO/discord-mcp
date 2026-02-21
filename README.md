@@ -13,10 +13,10 @@ Extensive Discord MCP server for Claude. Manage channels, messages, roles, threa
 5. Invite the bot (replace `YOUR_CLIENT_ID`):
 
 ```
-https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=1380786198&scope=bot
+https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=1099780140118&scope=bot
 ```
 
-**Required permissions:** `Manage Channels`, `Ban Members`, `Moderate Members`, `View Channels`, `Read Message History`, `Send Messages`, `Manage Roles`, `Kick Members`
+**Required permissions:** `Kick Members`, `Ban Members`, `Manage Channels`, `View Channel`, `Send Messages`, `Manage Messages`, `Add Reactions`, `Read Message History`, `Manage Roles`, `Moderate Members (Timeout)`
 
 ### 2. Install globally
 
@@ -30,11 +30,13 @@ Add to your `claude_desktop_config.json`:
 
 ```json
 {
-  "discord": {
-    "command": "npx",
-    "args": ["-y", "--prefer-online", "github:EL4CTEO/discord-mcp"],
-    "env": {
-      "DISCORD_BOT_TOKEN": "YOUR_TOKEN"
+  "mcpServers": {
+    "discord": {
+      "command": "discord-mcp",
+      "args": [],
+      "env": {
+        "DISCORD_BOT_TOKEN": "your-bot-token-here"
+      }
     }
   }
 }
@@ -150,9 +152,12 @@ After `set_guild`, you never need to specify `guild_id` again.
 
 | Permission | Used by |
 |-----------|---------|
-| `Manage Channels` | create/delete channels and categories |
+| `View Channel` | all read operations |
 | `Send Messages` | send_message, reply_message, mass_send_message |
+| `Add Reactions` | add_reaction |
 | `Read Message History` | get_messages, channel_analysis, thread_analysis |
+| `Manage Messages` | delete_message, mass_delete_message |
+| `Manage Channels` | create/delete channels and categories |
 | `Manage Roles` | create_role, delete_role, assign_role, remove_role |
 | `Kick Members` | kick_user |
 | `Ban Members` | ban_user, unban_user, mass_ban |
@@ -161,4 +166,4 @@ After `set_guild`, you never need to specify `guild_id` again.
 | Privileged: **Message Content** | channel_analysis, user_analysis |
 | Privileged: **Presence** | server_analysis (online count) |
 
-**Permission integer:** `1380786198`
+**Permission integer:** `1099780140118`
