@@ -1,6 +1,6 @@
 # Discord MCP
 
-Extensive Discord MCP server for Claude. Manage channels, categories, voice channels, and users — with both single and mass parallel operations.
+Extensive Discord MCP server for Claude. Manage channels, messages, roles, threads, and users — with both single and mass parallel operations.
 
 ## Setup
 
@@ -10,15 +10,15 @@ Extensive Discord MCP server for Claude. Manage channels, categories, voice chan
 2. Create a new application → Bot
 3. Enable these **Privileged Intents**: `Server Members Intent`, `Message Content Intent`, `Presence Intent`
 4. Copy the bot token
-5. Invite the bot using this URL (replace `YOUR_CLIENT_ID`):
+5. Invite the bot (replace `YOUR_CLIENT_ID`):
 
 ```
 https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=1380786198&scope=bot
 ```
 
-**Required permissions:** `Manage Channels`, `Ban Members`, `Moderate Members`, `View Channels`, `Read Message History`
+**Required permissions:** `Manage Channels`, `Ban Members`, `Moderate Members`, `View Channels`, `Read Message History`, `Send Messages`, `Manage Roles`, `Kick Members`
 
-### 2. Install globally (recommended)
+### 2. Install globally
 
 ```bash
 npm install -g github:EL4CTEO/discord-mcp
@@ -42,90 +42,109 @@ Add to your `claude_desktop_config.json`:
 }
 ```
 
-Config file location:
+Config locations:
 - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
-Restart Claude Desktop — the Discord tools will appear automatically.
-
-> **Note:** Using `npx -y github:EL4CTEO/discord-mcp` also works but downloads the package every time, which can cause timeout errors on startup. The global install is faster and more reliable.
+> **Tip:** Using `npx -y github:EL4CTEO/discord-mcp` also works but downloads every time, which can cause startup timeouts. Global install is recommended.
 
 ---
 
 ## First Use
 
-After restarting Claude Desktop, run these commands to get started:
+1. **List servers the bot is in:** `list_guilds`
+2. **Set your default server** (persists to disk — only needed once): `set_guild 123456789012345678`
+3. **List all channels with IDs:** `list_channels`
 
-1. **See all servers the bot is in:**
-   > "list_guilds"
-
-2. **Set your default server** (so you don't need to specify guild_id every time):
-   > "set_guild with ID 123456789012345678"
-
-3. **Verify it's set:**
-   > "get_guild"
+After `set_guild`, you never need to specify `guild_id` again.
 
 ---
 
 ## Tools
 
-### Guild Management
+### Guild
 
 | Tool | Description |
 |------|-------------|
-| `set_guild` | Set the default server ID (persists between sessions) |
-| `get_guild` | Get the currently set default server |
-| `list_guilds` | List all servers the bot is in |
+| `set_guild` | Persist a default guild ID to disk. Call once — survives restarts. |
+| `get_guild` | Get the currently persisted default guild ID. |
+| `list_guilds` | List all servers the bot is in. |
 
-### Channel Management
+### Channels
 
 | Tool | Description |
 |------|-------------|
-| `create_channel` | Create a single text channel |
-| `create_category` | Create a single category |
-| `create_voice_channel` | Create a single voice channel |
-| `mass_channels` | Create multiple text channels in parallel |
-| `mass_categories` | Create multiple categories in parallel |
-| `mass_voice_channels` | Create multiple voice channels in parallel |
-| `delete` | Delete a single channel/category by ID |
-| `mass_delete` | Delete multiple channels/categories in parallel |
+| `list_channels` | List all channels with IDs, names, types, and categories. Use to resolve a channel name to an ID. |
+| `create_channel` | Create a single text channel. |
+| `create_category` | Create a single category. |
+| `create_voice_channel` | Create a single voice channel. |
+| `mass_channels` | Create multiple text channels in parallel. |
+| `mass_categories` | Create multiple categories in parallel. |
+| `mass_voice_channels` | Create multiple voice channels in parallel. |
+| `delete` | Delete a single channel or category by ID. |
+| `mass_delete` | Delete multiple channels/categories in parallel. |
+
+### Messages
+
+| Tool | Description |
+|------|-------------|
+| `send_message` | Send a message to a channel. If channel_id is known, call directly — no prerequisite calls needed. |
+| `get_messages` | Fetch recent messages from a channel or thread (default 20, max 100). |
+| `reply_message` | Reply to a specific message, pinging the author. |
+| `edit_message` | Edit a message previously sent by the bot. |
+| `delete_message` | Delete a specific message. |
+| `mass_send_message` | Send messages to multiple channels in parallel. |
+| `mass_delete_message` | Delete multiple messages from a channel in parallel. |
+| `add_reaction` | Add an emoji reaction to a message. |
+
+### Roles
+
+| Tool | Description |
+|------|-------------|
+| `create_role` | Create a single role (with optional color, hoist, mentionable). |
+| `delete_role` | Delete a role by ID. |
+| `mass_create_role` | Create multiple roles in parallel. |
+| `mass_delete_role` | Delete multiple roles in parallel. |
+| `assign_role` | Assign a role to a user. Accepts username or snowflake ID. |
+| `remove_role` | Remove a role from a user. Accepts username or snowflake ID. |
+
+### Threads
+
+| Tool | Description |
+|------|-------------|
+| `create_thread` | Create a thread in a channel, optionally attached to a message. |
+| `send_thread_message` | Send a message inside a thread. |
+| `list_threads` | List active (and optionally archived) threads. |
+| `thread_analysis` | Analyze all messages in a thread: participants, word frequency, full history. |
+| `archive_thread` | Archive or unarchive (and optionally lock) a thread. |
 
 ### Analysis
 
 | Tool | Description |
 |------|-------------|
-| `server_analysis` | Full server overview: members, channels, roles, boosts, features |
-| `channel_analysis` | Channel stats: top users, top words, message volume, attachments |
-| `user_analysis` | User stats: messages per channel, top words, roles, join date, recent messages |
+| `server_analysis` | Full server overview: members, channels, roles, boosts, features. |
+| `channel_analysis` | Channel stats: top users, top words, message volume, attachments. |
+| `user_analysis` | User stats: messages per channel, top words, roles, join date, recent messages. |
 
 ### Moderation
 
 | Tool | Description |
 |------|-------------|
-| `ban_user` | Ban a single user |
-| `time_out_user` | Timeout a single user (duration in minutes) |
-| `mass_ban` | Ban multiple users in parallel |
-| `mass_time_out` | Timeout multiple users in parallel |
+| `kick_user` | Kick a user. Accepts username or snowflake ID. |
+| `ban_user` | Ban a user. Accepts username or snowflake ID. |
+| `unban_user` | Unban a user by snowflake ID. |
+| `time_out_user` | Timeout a user for N minutes. |
+| `mass_ban` | Ban multiple users in parallel. |
+| `mass_time_out` | Timeout multiple users in parallel. |
 
 ---
 
-## Example Prompts
+## Efficiency Tips
 
-```
-list_guilds
-
-set_guild 123456789012345678
-
-Analyze the server
-
-Create channels: general, announcements, off-topic
-
-Create 5 categories: Gaming, Music, Art, Tech, General
-
-Analyze what user 987654321098765432 has been saying
-
-Ban users 111111111, 222222222, 333333333 for spamming
-```
+- **`set_guild` once** — it persists to disk, no need to repeat it
+- **Use `list_channels`** to find a channel ID by name, not `server_analysis`
+- **Use `mass_*` tools** when operating on multiple targets — they run in parallel
+- **If you have a channel ID**, call `send_message` directly with no other calls first
 
 ---
 
@@ -134,11 +153,14 @@ Ban users 111111111, 222222222, 333333333 for spamming
 | Permission | Used by |
 |-----------|---------|
 | `Manage Channels` | create/delete channels and categories |
-| `Ban Members` | ban_user, mass_ban |
+| `Send Messages` | send_message, reply_message, mass_send_message |
+| `Read Message History` | get_messages, channel_analysis, thread_analysis |
+| `Manage Roles` | create_role, delete_role, assign_role, remove_role |
+| `Kick Members` | kick_user |
+| `Ban Members` | ban_user, unban_user, mass_ban |
 | `Moderate Members` | time_out_user, mass_time_out |
-| `View Channel` + `Read Message History` | channel_analysis, user_analysis |
-| Privileged intent: **Server Members** | server_analysis, user_analysis |
-| Privileged intent: **Message Content** | channel_analysis, user_analysis |
-| Privileged intent: **Presence** | server_analysis (online members count) |
+| Privileged: **Server Members** | server_analysis, user_analysis |
+| Privileged: **Message Content** | channel_analysis, user_analysis |
+| Privileged: **Presence** | server_analysis (online count) |
 
 **Permission integer:** `1380786198`

@@ -71,7 +71,6 @@ function getGuild(guildId) {
   return guild;
 }
 
-// Resolves snowflake ID OR username/displayName/globalName (case-insensitive)
 async function resolveMember(guild, userIdOrName) {
   if (/^\d{17,20}$/.test(userIdOrName)) {
     return await guild.members.fetch(userIdOrName);
@@ -88,7 +87,6 @@ async function resolveMember(guild, userIdOrName) {
   return member;
 }
 
-// Resolves a role by ID or name (case-insensitive)
 function resolveRole(guild, roleIdOrName) {
   if (/^\d{17,20}$/.test(roleIdOrName)) {
     const role = guild.roles.cache.get(roleIdOrName);
@@ -101,7 +99,6 @@ function resolveRole(guild, roleIdOrName) {
   return role;
 }
 
-// Fetch a text-based channel or thread by ID
 async function resolveTextChannel(guild, channelId) {
   let channel = guild.channels.cache.get(channelId);
   if (!channel) {
@@ -116,7 +113,6 @@ async function resolveTextChannel(guild, channelId) {
   return channel;
 }
 
-// Fetch a thread by ID (active or archived)
 async function fetchThread(guild, threadId) {
   const cached = guild.channels.cache.get(threadId);
   if (cached && cached.isThread()) return cached;
@@ -134,21 +130,26 @@ const tools = [
   // ── GUILD ─────────────────────────────────────────────────────────────────
   {
     name: "set_guild",
-    description: "Set the default guild (server) ID so you don't need to specify it every time",
+    description: "Persist a default guild (server) ID to disk. Call this ONCE — it survives restarts. After setting, all other tools work without specifying guild_id.",
     inputSchema: { type: "object", properties: { guild_id: { type: "string" } }, required: ["guild_id"] },
   },
   {
     name: "get_guild",
-    description: "Get the currently set default guild ID",
+    description: "Get the persisted default guild ID. Call only when unsure if a default has already been set.",
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "list_guilds",
-    description: "List all Discord servers the bot is currently in",
+    description: "List all Discord servers the bot is in. Use only when the guild ID is unknown.",
     inputSchema: { type: "object", properties: {} },
   },
 
   // ── CHANNELS ──────────────────────────────────────────────────────────────
+  {
+    name: "list_channels",
+    description: "List all channels and categories in the guild with their IDs, names, and types. Use this to resolve a channel name to an ID before sending messages or reading messages. Do NOT use server_analysis or channel_analysis just to find a channel ID.",
+    inputSchema: { type: "object", properties: { guild_id: { type: "string" } } },
+  },
   {
     name: "create_channel",
     description: "Create a single text channel in a guild",
@@ -166,17 +167,17 @@ const tools = [
   },
   {
     name: "mass_channels",
-    description: "Create multiple text channels in parallel",
+    description: "Create multiple text channels in parallel. More efficient than calling create_channel repeatedly.",
     inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channels: { type: "array", items: { type: "object", properties: { name: { type: "string" }, category_id: { type: "string" }, topic: { type: "string" } }, required: ["name"] } } }, required: ["channels"] },
   },
   {
     name: "mass_categories",
-    description: "Create multiple categories in parallel",
+    description: "Create multiple categories in parallel. More efficient than calling create_category repeatedly.",
     inputSchema: { type: "object", properties: { guild_id: { type: "string" }, names: { type: "array", items: { type: "string" } } }, required: ["names"] },
   },
   {
     name: "mass_voice_channels",
-    description: "Create multiple voice channels in parallel",
+    description: "Create multiple voice channels in parallel. More efficient than calling create_voice_channel repeatedly.",
     inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channels: { type: "array", items: { type: "object", properties: { name: { type: "string" }, category_id: { type: "string" }, user_limit: { type: "number" } }, required: ["name"] } } }, required: ["channels"] },
   },
   {
@@ -186,38 +187,38 @@ const tools = [
   },
   {
     name: "mass_delete",
-    description: "Delete multiple channels/categories in parallel",
+    description: "Delete multiple channels/categories in parallel. More efficient than calling delete repeatedly.",
     inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_ids: { type: "array", items: { type: "string" } } }, required: ["channel_ids"] },
   },
 
   // ── MESSAGES ──────────────────────────────────────────────────────────────
   {
     name: "get_messages",
-    description: "Fetch recent messages from a channel or thread with full content — use this to read what people are saying",
+    description: "Fetch recent messages from a channel or thread. Requires channel_id — if unknown, call list_channels first to resolve the name to an ID.",
     inputSchema: {
       type: "object",
       properties: {
-        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
+        guild_id: { type: "string", description: "Optional if default guild is set" },
         channel_id: { type: "string", description: "Channel or thread ID" },
         limit: { type: "number", description: "Number of messages to fetch (default: 20, max: 100)" },
-        before_message_id: { type: "string", description: "Fetch messages before this message ID (for pagination)" },
+        before_message_id: { type: "string", description: "Fetch messages before this message ID (pagination)" },
       },
       required: ["channel_id"],
     },
   },
   {
     name: "send_message",
-    description: "Send a message to a specific channel or thread",
+    description: "Send a message to a channel or thread. If channel_id is already known, call this directly — do NOT call list_guilds, set_guild, list_channels, or any other tool first. Only call list_channels beforehand if you need to resolve a channel name to an ID.",
     inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" }, content: { type: "string" } }, required: ["channel_id", "content"] },
   },
   {
     name: "reply_message",
-    description: "Reply to a specific message in a channel — creates a Discord reply that pings the original author",
+    description: "Reply to a specific message, pinging the original author. Use when you have a message_id to reply to.",
     inputSchema: {
       type: "object",
       properties: {
-        guild_id: { type: "string", description: "Discord server ID (optional if default is set)" },
-        channel_id: { type: "string", description: "The channel or thread ID containing the message" },
+        guild_id: { type: "string", description: "Optional if default guild is set" },
+        channel_id: { type: "string", description: "Channel or thread ID containing the message" },
         message_id: { type: "string", description: "The message ID to reply to" },
         content: { type: "string", description: "Reply content" },
         ping: { type: "boolean", description: "Whether to ping the original author (default: true)" },
@@ -227,7 +228,7 @@ const tools = [
   },
   {
     name: "edit_message",
-    description: "Edit a message sent by the bot",
+    description: "Edit a message previously sent by the bot",
     inputSchema: {
       type: "object",
       properties: {
@@ -241,7 +242,7 @@ const tools = [
   },
   {
     name: "mass_send_message",
-    description: "Send messages to multiple channels in parallel",
+    description: "Send messages to multiple channels in parallel. Use this instead of calling send_message multiple times.",
     inputSchema: { type: "object", properties: { guild_id: { type: "string" }, messages: { type: "array", items: { type: "object", properties: { channel_id: { type: "string" }, content: { type: "string" } }, required: ["channel_id", "content"] } } }, required: ["messages"] },
   },
   {
@@ -251,7 +252,7 @@ const tools = [
   },
   {
     name: "mass_delete_message",
-    description: "Delete multiple messages from a channel in parallel",
+    description: "Delete multiple messages from a channel in parallel. More efficient than calling delete_message repeatedly.",
     inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" }, message_ids: { type: "array", items: { type: "string" } } }, required: ["channel_id", "message_ids"] },
   },
   {
@@ -282,12 +283,12 @@ const tools = [
   },
   {
     name: "mass_create_role",
-    description: "Create multiple roles in parallel",
+    description: "Create multiple roles in parallel. More efficient than calling create_role repeatedly.",
     inputSchema: { type: "object", properties: { guild_id: { type: "string" }, roles: { type: "array", items: { type: "object", properties: { name: { type: "string" }, color: { type: "string" }, hoist: { type: "boolean" }, mentionable: { type: "boolean" } }, required: ["name"] } } }, required: ["roles"] },
   },
   {
     name: "mass_delete_role",
-    description: "Delete multiple roles in parallel",
+    description: "Delete multiple roles in parallel. More efficient than calling delete_role repeatedly.",
     inputSchema: { type: "object", properties: { guild_id: { type: "string" }, role_ids: { type: "array", items: { type: "string" } } }, required: ["role_ids"] },
   },
   {
@@ -320,17 +321,17 @@ const tools = [
   // ── ANALYSIS ──────────────────────────────────────────────────────────────
   {
     name: "server_analysis",
-    description: "Complete analysis of a Discord server",
+    description: "Full server overview: members, channels, roles, boosts, features. Do NOT use just to find a channel ID — use list_channels instead.",
     inputSchema: { type: "object", properties: { guild_id: { type: "string" } } },
   },
   {
     name: "channel_analysis",
-    description: "Analyze a specific text channel",
+    description: "Analyze message activity in a text channel: top users, top words, message volume, attachments. Do NOT use just to find a channel ID — use list_channels instead.",
     inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" }, limit: { type: "number" } }, required: ["channel_id"] },
   },
   {
     name: "user_analysis",
-    description: "Analyze a user in a server. Accepts snowflake ID or username/display name.",
+    description: "Analyze a user's activity: messages per channel, top words, roles, join date, recent messages. Accepts snowflake ID or username/display name.",
     inputSchema: { type: "object", properties: { guild_id: { type: "string" }, user_id: { type: "string" }, limit: { type: "number" } }, required: ["user_id"] },
   },
 
@@ -342,12 +343,12 @@ const tools = [
   },
   {
     name: "send_thread_message",
-    description: "Send a message inside a thread",
+    description: "Send a message inside a thread. Use thread_id (not channel_id).",
     inputSchema: { type: "object", properties: { guild_id: { type: "string" }, thread_id: { type: "string" }, content: { type: "string" } }, required: ["thread_id", "content"] },
   },
   {
     name: "thread_analysis",
-    description: "Read and analyze all messages in a thread",
+    description: "Read and analyze all messages in a thread: participants, word frequency, full message history.",
     inputSchema: { type: "object", properties: { guild_id: { type: "string" }, thread_id: { type: "string" }, limit: { type: "number" } }, required: ["thread_id"] },
   },
   {
@@ -379,17 +380,17 @@ const tools = [
   },
   {
     name: "time_out_user",
-    description: "Timeout a user. Accepts snowflake ID or username.",
+    description: "Timeout a user for a given duration. Accepts snowflake ID or username.",
     inputSchema: { type: "object", properties: { guild_id: { type: "string" }, user_id: { type: "string" }, duration_minutes: { type: "number" }, reason: { type: "string" } }, required: ["user_id", "duration_minutes"] },
   },
   {
     name: "mass_ban",
-    description: "Ban multiple users in parallel",
+    description: "Ban multiple users in parallel. More efficient than calling ban_user repeatedly.",
     inputSchema: { type: "object", properties: { guild_id: { type: "string" }, user_ids: { type: "array", items: { type: "string" } }, reason: { type: "string" }, delete_message_days: { type: "number" } }, required: ["user_ids"] },
   },
   {
     name: "mass_time_out",
-    description: "Timeout multiple users in parallel",
+    description: "Timeout multiple users in parallel. More efficient than calling time_out_user repeatedly.",
     inputSchema: { type: "object", properties: { guild_id: { type: "string" }, user_ids: { type: "array", items: { type: "string" } }, duration_minutes: { type: "number" }, reason: { type: "string" } }, required: ["user_ids", "duration_minutes"] },
   },
 ];
@@ -397,7 +398,6 @@ const tools = [
 async function handleTool(name, args) {
   await requireDiscord();
 
-  // ── GUILD ────────────────────────────────────────────────────────────────
   switch (name) {
     case "set_guild": {
       const guild = getGuild(args.guild_id);
@@ -429,7 +429,28 @@ async function handleTool(name, args) {
   const guild = getGuild(guildId);
 
   switch (name) {
-    // ── CHANNELS ──────────────────────────────────────────────────────────
+    case "list_channels": {
+      const channels = guild.channels.cache;
+      return {
+        guild_id: guild.id,
+        guild_name: guild.name,
+        channels: channels
+          .sort((a, b) => (a.position || 0) - (b.position || 0))
+          .map((c) => ({
+            id: c.id,
+            name: c.name,
+            type: c.type === ChannelType.GuildText ? "text"
+              : c.type === ChannelType.GuildVoice ? "voice"
+              : c.type === ChannelType.GuildCategory ? "category"
+              : c.type === ChannelType.GuildForum ? "forum"
+              : c.type === ChannelType.GuildAnnouncement ? "announcement"
+              : String(c.type),
+            category_id: c.parentId || null,
+            category_name: c.parent?.name || null,
+          })),
+      };
+    }
+
     case "create_channel": {
       const ch = await guild.channels.create({ name: args.name, type: ChannelType.GuildText, parent: args.category_id || null, topic: args.topic || null });
       return { id: ch.id, name: ch.name, type: "text" };
@@ -466,7 +487,6 @@ async function handleTool(name, args) {
       return results.map((r, i) => r.status === "fulfilled" ? { id: args.channel_ids[i], name: r.value.name, status: "deleted" } : { id: args.channel_ids[i], status: "failed", error: r.reason?.message });
     }
 
-    // ── MESSAGES ──────────────────────────────────────────────────────────
     case "get_messages": {
       const channel = await resolveTextChannel(guild, args.channel_id);
       const limit = Math.min(args.limit || 20, 100);
@@ -534,7 +554,6 @@ async function handleTool(name, args) {
       return { message_id: args.message_id, emoji: args.emoji, status: "reacted" };
     }
 
-    // ── ROLES ─────────────────────────────────────────────────────────────
     case "create_role": {
       const role = await guild.roles.create({ name: args.name, color: args.color || null, hoist: args.hoist || false, mentionable: args.mentionable || false });
       return { id: role.id, name: role.name, color: role.hexColor, hoist: role.hoist, mentionable: role.mentionable };
@@ -567,7 +586,6 @@ async function handleTool(name, args) {
       return { user_id: member.id, username: member.user.username, role_id: role.id, role_name: role.name, status: "removed" };
     }
 
-    // ── ANALYSIS ──────────────────────────────────────────────────────────
     case "server_analysis": {
       await guild.members.fetch();
       const channels = guild.channels.cache;
@@ -648,7 +666,6 @@ async function handleTool(name, args) {
       };
     }
 
-    // ── THREADS ───────────────────────────────────────────────────────────
     case "create_thread": {
       const channel = guild.channels.cache.get(args.channel_id);
       if (!channel) throw new Error(`Channel ${args.channel_id} not found`);
@@ -720,7 +737,6 @@ async function handleTool(name, args) {
       return { thread_id: thread.id, name: thread.name, archived, locked };
     }
 
-    // ── MODERATION ────────────────────────────────────────────────────────
     case "kick_user": {
       const member = await resolveMember(guild, args.user_id);
       await member.kick(args.reason || "No reason provided");
