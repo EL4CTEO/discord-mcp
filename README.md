@@ -30,13 +30,11 @@ Add to your `claude_desktop_config.json`:
 
 ```json
 {
-  "mcpServers": {
-    "discord": {
-      "command": "discord-mcp",
-      "args": [],
-      "env": {
-        "DISCORD_BOT_TOKEN": "your-bot-token-here"
-      }
+  "discord": {
+    "command": "npx",
+    "args": ["-y", "--prefer-online", "github:EL4CTEO/discord-mcp"],
+    "env": {
+      "DISCORD_BOT_TOKEN": "YOUR_TOKEN"
     }
   }
 }
