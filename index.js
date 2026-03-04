@@ -40,6 +40,7 @@ const discord = new Client({
     GatewayIntentBits.GuildModeration,
     GatewayIntentBits.GuildPresences,
     GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.DirectMessages,
   ],
 });
 
@@ -210,6 +211,18 @@ const tools = [
     name: "send_message",
     description: "Send a message to a channel or thread. If channel_id is already known, call this directly — do NOT call list_guilds, set_guild, list_channels, or any other tool first. Only call list_channels beforehand if you need to resolve a channel name to an ID.",
     inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" }, content: { type: "string" } }, required: ["channel_id", "content"] },
+  },
+  {
+    name: "send_dm",
+    description: "Send a direct message (DM) to a user by their Discord snowflake ID. The bot must share a server with the user and the user must allow DMs from server members.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        user_id: { type: "string", description: "Discord snowflake ID of the user to DM" },
+        content: { type: "string", description: "Message content to send" },
+      },
+      required: ["user_id", "content"],
+    },
   },
   {
     name: "reply_message",
@@ -422,6 +435,12 @@ async function handleTool(name, args) {
         guilds: discord.guilds.cache.map((g) => ({ id: g.id, name: g.name, member_count: g.memberCount, is_default: g.id === config.default_guild_id })),
         default_guild_id: config.default_guild_id || null,
       };
+    }
+    case "send_dm": {
+      const user = await discord.users.fetch(args.user_id);
+      const dmChannel = await user.createDM();
+      const msg = await dmChannel.send(args.content);
+      return { message_id: msg.id, user_id: args.user_id, username: user.username, status: "sent" };
     }
   }
 
