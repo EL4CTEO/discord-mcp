@@ -51,7 +51,7 @@ const discordReady = new Promise((resolve, reject) => {
 });
 
 const server = new Server(
-  { name: "discord-mcp", version: "1.0.0" },
+  { name: "discord-mcp", version: "2.0.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -100,17 +100,31 @@ function resolveRole(guild, roleIdOrName) {
   return role;
 }
 
-async function resolveTextChannel(guild, channelId) {
-  let channel = guild.channels.cache.get(channelId);
+// Resolves a channel by ID or by name (case-insensitive). Also checks active threads.
+async function resolveTextChannel(guild, channelIdOrName) {
+  // Try by ID first
+  let channel = guild.channels.cache.get(channelIdOrName);
   if (!channel) {
-    try { channel = await discord.channels.fetch(channelId); } catch {}
+    try { channel = await discord.channels.fetch(channelIdOrName); } catch {}
   }
+  // Try by name if still not found
+  if (!channel) {
+    const lower = channelIdOrName.toLowerCase();
+    channel = guild.channels.cache.find(
+      (c) => c.name && c.name.toLowerCase() === lower && c.isTextBased()
+    );
+  }
+  // Try active threads
   if (!channel) {
     const activeThreads = await guild.channels.fetchActiveThreads();
-    channel = activeThreads.threads.get(channelId);
+    channel = activeThreads.threads.get(channelIdOrName);
+    if (!channel) {
+      const lower = channelIdOrName.toLowerCase();
+      channel = activeThreads.threads.find((t) => t.name.toLowerCase() === lower);
+    }
   }
-  if (!channel) throw new Error(`Channel/thread ${channelId} not found`);
-  if (!channel.isTextBased()) throw new Error(`Channel ${channelId} is not text-based`);
+  if (!channel) throw new Error(`Channel/thread "${channelIdOrName}" not found`);
+  if (!channel.isTextBased()) throw new Error(`Channel "${channelIdOrName}" is not text-based`);
   return channel;
 }
 
@@ -125,6 +139,29 @@ async function fetchThread(guild, threadId) {
   const active = activeThreads.threads.get(threadId);
   if (active) return active;
   throw new Error(`Thread ${threadId} not found or bot cannot access it`);
+}
+
+// Build a Discord message payload supporting plain text and/or embeds
+function buildMessagePayload(args) {
+  const payload = {};
+  if (args.content) payload.content = args.content;
+  if (args.embed) {
+    const e = args.embed;
+    const built = {};
+    if (e.title) built.title = e.title;
+    if (e.description) built.description = e.description;
+    if (e.color !== undefined) built.color = typeof e.color === "string" ? parseInt(e.color.replace("#", ""), 16) : e.color;
+    if (e.url) built.url = e.url;
+    if (e.thumbnail) built.thumbnail = { url: e.thumbnail };
+    if (e.image) built.image = { url: e.image };
+    if (e.footer) built.footer = typeof e.footer === "string" ? { text: e.footer } : e.footer;
+    if (e.author) built.author = typeof e.author === "string" ? { name: e.author } : e.author;
+    if (e.fields) built.fields = e.fields;
+    if (e.timestamp) built.timestamp = e.timestamp === true ? new Date().toISOString() : e.timestamp;
+    payload.embeds = [built];
+  }
+  if (!payload.content && !payload.embeds) throw new Error("Either content or embed is required");
+  return payload;
 }
 
 const tools = [
@@ -167,6 +204,21 @@ const tools = [
     inputSchema: { type: "object", properties: { guild_id: { type: "string" }, name: { type: "string" }, category_id: { type: "string" }, user_limit: { type: "number" } }, required: ["name"] },
   },
   {
+    name: "rename_channel",
+    description: "Rename an existing channel or category",
+    inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Channel ID or name" }, name: { type: "string", description: "New name" } }, required: ["channel_id", "name"] },
+  },
+  {
+    name: "set_channel_topic",
+    description: "Set or update the topic of a text channel",
+    inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Channel ID or name" }, topic: { type: "string", description: "New topic (empty string to clear)" } }, required: ["channel_id", "topic"] },
+  },
+  {
+    name: "move_channel",
+    description: "Move a channel into a different category (or remove it from any category)",
+    inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Channel ID to move" }, category_id: { type: "string", description: "Target category ID (omit to remove from category)" } }, required: ["channel_id"] },
+  },
+  {
     name: "mass_channels",
     description: "Create multiple text channels in parallel. More efficient than calling create_channel repeatedly.",
     inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channels: { type: "array", items: { type: "object", properties: { name: { type: "string" }, category_id: { type: "string" }, topic: { type: "string" } }, required: ["name"] } } }, required: ["channels"] },
@@ -195,48 +247,116 @@ const tools = [
   // ── MESSAGES ──────────────────────────────────────────────────────────────
   {
     name: "get_messages",
-    description: "Fetch recent messages from a channel or thread. Requires channel_id — if unknown, call list_channels first to resolve the name to an ID.",
+    description: "Fetch recent messages from a channel or thread. Accepts channel_id as ID or name. Supports before_message_id and after_message_id for pagination.",
     inputSchema: {
       type: "object",
       properties: {
         guild_id: { type: "string", description: "Optional if default guild is set" },
-        channel_id: { type: "string", description: "Channel or thread ID" },
+        channel_id: { type: "string", description: "Channel or thread ID (or name)" },
         limit: { type: "number", description: "Number of messages to fetch (default: 20, max: 100)" },
-        before_message_id: { type: "string", description: "Fetch messages before this message ID (pagination)" },
+        before_message_id: { type: "string", description: "Fetch messages before this message ID" },
+        after_message_id: { type: "string", description: "Fetch messages after this message ID" },
       },
       required: ["channel_id"],
     },
   },
   {
-    name: "send_message",
-    description: "Send a message to a channel or thread. If channel_id is already known, call this directly — do NOT call list_guilds, set_guild, list_channels, or any other tool first. Only call list_channels beforehand if you need to resolve a channel name to an ID.",
-    inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" }, content: { type: "string" } }, required: ["channel_id", "content"] },
-  },
-  {
-    name: "send_dm",
-    description: "Send a direct message (DM) to a user by their Discord snowflake ID. The bot must share a server with the user and the user must allow DMs from server members.",
+    name: "get_message",
+    description: "Fetch a single message by its ID from a channel or thread.",
     inputSchema: {
       type: "object",
       properties: {
-        user_id: { type: "string", description: "Discord snowflake ID of the user to DM" },
-        content: { type: "string", description: "Message content to send" },
+        guild_id: { type: "string" },
+        channel_id: { type: "string", description: "Channel or thread ID (or name)" },
+        message_id: { type: "string", description: "The message ID to fetch" },
       },
-      required: ["user_id", "content"],
+      required: ["channel_id", "message_id"],
+    },
+  },
+  {
+    name: "search_messages",
+    description: "Search for messages containing a keyword in a channel. Fetches up to `limit` recent messages and filters by keyword (case-insensitive).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guild_id: { type: "string" },
+        channel_id: { type: "string", description: "Channel ID or name to search in" },
+        query: { type: "string", description: "Keyword or phrase to search for (case-insensitive)" },
+        limit: { type: "number", description: "How many recent messages to scan (default: 100, max: 100)" },
+      },
+      required: ["channel_id", "query"],
+    },
+  },
+  {
+    name: "send_message",
+    description: "Send a message (with optional embed) to a channel or thread. Accepts channel_id as ID or name. If channel_id is already known, call directly — do NOT call list_guilds, set_guild, list_channels, or any other tool first.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guild_id: { type: "string" },
+        channel_id: { type: "string", description: "Channel or thread ID (or name)" },
+        content: { type: "string", description: "Plain text content (optional if embed is provided)" },
+        embed: {
+          type: "object",
+          description: "Optional Discord embed object",
+          properties: {
+            title: { type: "string" },
+            description: { type: "string" },
+            color: { description: "Hex color string (e.g. '#ff0000') or integer" },
+            url: { type: "string" },
+            thumbnail: { type: "string", description: "Thumbnail image URL" },
+            image: { type: "string", description: "Main image URL" },
+            footer: { description: "Footer text string or { text, icon_url }" },
+            author: { description: "Author name string or { name, url, icon_url }" },
+            fields: { type: "array", items: { type: "object", properties: { name: { type: "string" }, value: { type: "string" }, inline: { type: "boolean" } }, required: ["name", "value"] } },
+            timestamp: { description: "Set to true for current time, or ISO string" },
+          },
+        },
+      },
+      required: ["channel_id"],
+    },
+  },
+  {
+    name: "send_dm",
+    description: "Send a direct message (DM) to a user by their Discord snowflake ID.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        user_id: { type: "string", description: "Discord snowflake ID of the user" },
+        content: { type: "string", description: "Message content" },
+        embed: { type: "object", description: "Optional embed (same structure as send_message embed)" },
+      },
+      required: ["user_id"],
+    },
+  },
+  {
+    name: "send_dm_by_username",
+    description: "Send a DM to a user by username or display name (resolves to user ID automatically). The bot must share a server with the user.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guild_id: { type: "string" },
+        username: { type: "string", description: "Username or display name of the user" },
+        content: { type: "string", description: "Message content" },
+        embed: { type: "object", description: "Optional embed (same structure as send_message embed)" },
+      },
+      required: ["username"],
     },
   },
   {
     name: "reply_message",
-    description: "Reply to a specific message, pinging the original author. Use when you have a message_id to reply to.",
+    description: "Reply to a specific message, pinging the original author.",
     inputSchema: {
       type: "object",
       properties: {
-        guild_id: { type: "string", description: "Optional if default guild is set" },
-        channel_id: { type: "string", description: "Channel or thread ID containing the message" },
-        message_id: { type: "string", description: "The message ID to reply to" },
-        content: { type: "string", description: "Reply content" },
+        guild_id: { type: "string" },
+        channel_id: { type: "string", description: "Channel or thread ID (or name)" },
+        message_id: { type: "string" },
+        content: { type: "string" },
+        embed: { type: "object", description: "Optional embed" },
         ping: { type: "boolean", description: "Whether to ping the original author (default: true)" },
       },
-      required: ["channel_id", "message_id", "content"],
+      required: ["channel_id", "message_id"],
     },
   },
   {
@@ -246,17 +366,62 @@ const tools = [
       type: "object",
       properties: {
         guild_id: { type: "string" },
-        channel_id: { type: "string" },
+        channel_id: { type: "string", description: "Channel or thread ID (or name)" },
         message_id: { type: "string" },
         content: { type: "string" },
+        embed: { type: "object", description: "Optional embed" },
       },
-      required: ["channel_id", "message_id", "content"],
+      required: ["channel_id", "message_id"],
+    },
+  },
+  {
+    name: "pin_message",
+    description: "Pin a message in a channel",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guild_id: { type: "string" },
+        channel_id: { type: "string", description: "Channel ID or name" },
+        message_id: { type: "string" },
+      },
+      required: ["channel_id", "message_id"],
+    },
+  },
+  {
+    name: "unpin_message",
+    description: "Unpin a message from a channel",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guild_id: { type: "string" },
+        channel_id: { type: "string", description: "Channel ID or name" },
+        message_id: { type: "string" },
+      },
+      required: ["channel_id", "message_id"],
     },
   },
   {
     name: "mass_send_message",
-    description: "Send messages to multiple channels in parallel. Use this instead of calling send_message multiple times.",
-    inputSchema: { type: "object", properties: { guild_id: { type: "string" }, messages: { type: "array", items: { type: "object", properties: { channel_id: { type: "string" }, content: { type: "string" } }, required: ["channel_id", "content"] } } }, required: ["messages"] },
+    description: "Send messages (with optional embeds) to multiple channels in parallel.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guild_id: { type: "string" },
+        messages: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              channel_id: { type: "string" },
+              content: { type: "string" },
+              embed: { type: "object" },
+            },
+            required: ["channel_id"],
+          },
+        },
+      },
+      required: ["messages"],
+    },
   },
   {
     name: "delete_message",
@@ -264,8 +429,21 @@ const tools = [
     inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" }, message_id: { type: "string" } }, required: ["channel_id", "message_id"] },
   },
   {
+    name: "bulk_delete_messages",
+    description: "Delete up to 100 messages at once using Discord's native bulk delete API (much faster than deleting one-by-one). Messages must be less than 14 days old.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guild_id: { type: "string" },
+        channel_id: { type: "string", description: "Channel ID or name" },
+        message_ids: { type: "array", items: { type: "string" }, description: "Array of message IDs to delete (max 100)" },
+      },
+      required: ["channel_id", "message_ids"],
+    },
+  },
+  {
     name: "mass_delete_message",
-    description: "Delete multiple messages from a channel in parallel. More efficient than calling delete_message repeatedly.",
+    description: "Delete multiple messages from a channel in parallel. Use bulk_delete_messages instead if messages are less than 14 days old (faster).",
     inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" }, message_ids: { type: "array", items: { type: "string" } } }, required: ["channel_id", "message_ids"] },
   },
   {
@@ -275,7 +453,7 @@ const tools = [
       type: "object",
       properties: {
         guild_id: { type: "string" },
-        channel_id: { type: "string", description: "Channel or thread ID containing the message" },
+        channel_id: { type: "string", description: "Channel or thread ID (or name)" },
         message_id: { type: "string" },
         emoji: { type: "string", description: "Unicode emoji (e.g. '👍') or custom emoji ID (e.g. '<:name:id>')" },
       },
@@ -284,6 +462,11 @@ const tools = [
   },
 
   // ── ROLES ─────────────────────────────────────────────────────────────────
+  {
+    name: "list_roles",
+    description: "List all roles in the guild with their IDs, names, colors, and member counts. Use this to find a role ID by name without doing a full server_analysis.",
+    inputSchema: { type: "object", properties: { guild_id: { type: "string" } } },
+  },
   {
     name: "create_role",
     description: "Create a single role in a guild",
@@ -331,6 +514,20 @@ const tools = [
     },
   },
 
+  // ── MEMBERS ───────────────────────────────────────────────────────────────
+  {
+    name: "list_members",
+    description: "List members in the guild with their IDs, usernames, display names, and roles. Supports optional role filter and limit.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guild_id: { type: "string" },
+        role_id: { type: "string", description: "Filter to members that have this role (ID or name)" },
+        limit: { type: "number", description: "Max members to return (default: 100, max: 1000)" },
+      },
+    },
+  },
+
   // ── ANALYSIS ──────────────────────────────────────────────────────────────
   {
     name: "server_analysis",
@@ -373,6 +570,22 @@ const tools = [
     name: "archive_thread",
     description: "Archive or unarchive a thread",
     inputSchema: { type: "object", properties: { guild_id: { type: "string" }, thread_id: { type: "string" }, archived: { type: "boolean" }, locked: { type: "boolean" } }, required: ["thread_id"] },
+  },
+  {
+    name: "create_forum_post",
+    description: "Create a new post (thread) in a Forum channel",
+    inputSchema: {
+      type: "object",
+      properties: {
+        guild_id: { type: "string" },
+        channel_id: { type: "string", description: "Forum channel ID or name" },
+        name: { type: "string", description: "Title of the forum post" },
+        content: { type: "string", description: "Initial message content" },
+        embed: { type: "object", description: "Optional embed for the initial message" },
+        auto_archive_duration: { type: "number", description: "Minutes before auto-archive (60, 1440, 4320, 10080)" },
+      },
+      required: ["channel_id", "name"],
+    },
   },
 
   // ── MODERATION ────────────────────────────────────────────────────────────
@@ -439,7 +652,8 @@ async function handleTool(name, args) {
     case "send_dm": {
       const user = await discord.users.fetch(args.user_id);
       const dmChannel = await user.createDM();
-      const msg = await dmChannel.send(args.content);
+      const payload = buildMessagePayload(args);
+      const msg = await dmChannel.send(payload);
       return { message_id: msg.id, user_id: args.user_id, username: user.username, status: "sent" };
     }
   }
@@ -482,6 +696,28 @@ async function handleTool(name, args) {
       const vc = await guild.channels.create({ name: args.name, type: ChannelType.GuildVoice, parent: args.category_id || null, userLimit: args.user_limit || 0 });
       return { id: vc.id, name: vc.name, type: "voice" };
     }
+    case "rename_channel": {
+      const ch = guild.channels.cache.get(args.channel_id) ||
+        guild.channels.cache.find((c) => c.name.toLowerCase() === args.channel_id.toLowerCase());
+      if (!ch) throw new Error(`Channel "${args.channel_id}" not found`);
+      const oldName = ch.name;
+      await ch.setName(args.name);
+      return { id: ch.id, old_name: oldName, new_name: args.name };
+    }
+    case "set_channel_topic": {
+      const ch = guild.channels.cache.get(args.channel_id) ||
+        guild.channels.cache.find((c) => c.name.toLowerCase() === args.channel_id.toLowerCase());
+      if (!ch) throw new Error(`Channel "${args.channel_id}" not found`);
+      if (!ch.isTextBased() || ch.type === ChannelType.GuildVoice) throw new Error("Cannot set topic on this channel type");
+      await ch.setTopic(args.topic);
+      return { id: ch.id, name: ch.name, topic: args.topic };
+    }
+    case "move_channel": {
+      const ch = guild.channels.cache.get(args.channel_id);
+      if (!ch) throw new Error(`Channel ${args.channel_id} not found`);
+      await ch.setParent(args.category_id || null);
+      return { id: ch.id, name: ch.name, category_id: args.category_id || null };
+    }
     case "mass_channels": {
       const results = await Promise.allSettled(args.channels.map((ch) => guild.channels.create({ name: ch.name, type: ChannelType.GuildText, parent: ch.category_id || null, topic: ch.topic || null })));
       return results.map((r, i) => r.status === "fulfilled" ? { name: args.channels[i].name, id: r.value.id, status: "created" } : { name: args.channels[i].name, status: "failed", error: r.reason?.message });
@@ -511,6 +747,7 @@ async function handleTool(name, args) {
       const limit = Math.min(args.limit || 20, 100);
       const fetchOptions = { limit };
       if (args.before_message_id) fetchOptions.before = args.before_message_id;
+      if (args.after_message_id) fetchOptions.after = args.after_message_id;
       const messages = await channel.messages.fetch(fetchOptions);
       return {
         channel_id: channel.id,
@@ -527,31 +764,94 @@ async function handleTool(name, args) {
           embeds: m.embeds.length,
           reactions: m.reactions.cache.map((r) => ({ emoji: r.emoji.toString(), count: r.count })),
           reply_to: m.reference?.messageId || null,
+          pinned: m.pinned,
+        })),
+      };
+    }
+    case "get_message": {
+      const channel = await resolveTextChannel(guild, args.channel_id);
+      const m = await channel.messages.fetch(args.message_id);
+      return {
+        id: m.id,
+        author: m.author.username,
+        author_id: m.author.id,
+        display_name: m.member?.displayName || m.author.username,
+        content: m.content,
+        timestamp: m.createdAt,
+        edited: !!m.editedAt,
+        attachments: [...m.attachments.values()].map((a) => ({ name: a.name, url: a.url })),
+        embeds: m.embeds.length,
+        reactions: m.reactions.cache.map((r) => ({ emoji: r.emoji.toString(), count: r.count })),
+        reply_to: m.reference?.messageId || null,
+        pinned: m.pinned,
+      };
+    }
+    case "search_messages": {
+      const channel = await resolveTextChannel(guild, args.channel_id);
+      const limit = Math.min(args.limit || 100, 100);
+      const messages = await channel.messages.fetch({ limit });
+      const lower = args.query.toLowerCase();
+      const matches = [...messages.values()].filter((m) => m.content.toLowerCase().includes(lower));
+      return {
+        channel_id: channel.id,
+        channel_name: channel.name,
+        query: args.query,
+        total_scanned: messages.size,
+        matches_found: matches.length,
+        messages: matches.reverse().map((m) => ({
+          id: m.id,
+          author: m.author.username,
+          author_id: m.author.id,
+          content: m.content,
+          timestamp: m.createdAt,
         })),
       };
     }
     case "send_message": {
       const channel = await resolveTextChannel(guild, args.channel_id);
-      const msg = await channel.send(args.content);
-      return { message_id: msg.id, channel_id: args.channel_id, content: args.content };
+      const payload = buildMessagePayload(args);
+      const msg = await channel.send(payload);
+      return { message_id: msg.id, channel_id: channel.id, channel_name: channel.name };
+    }
+    case "send_dm_by_username": {
+      const member = await resolveMember(guild, args.username);
+      const dmChannel = await member.user.createDM();
+      const payload = buildMessagePayload(args);
+      const msg = await dmChannel.send(payload);
+      return { message_id: msg.id, user_id: member.id, username: member.user.username, status: "sent" };
     }
     case "reply_message": {
       const channel = await resolveTextChannel(guild, args.channel_id);
       const targetMsg = await channel.messages.fetch(args.message_id);
-      const msg = await targetMsg.reply({ content: args.content, allowedMentions: { repliedUser: args.ping !== false } });
-      return { message_id: msg.id, channel_id: args.channel_id, replied_to: args.message_id, content: args.content };
+      const payload = { ...buildMessagePayload(args), allowedMentions: { repliedUser: args.ping !== false } };
+      const msg = await targetMsg.reply(payload);
+      return { message_id: msg.id, channel_id: channel.id, replied_to: args.message_id };
     }
     case "edit_message": {
       const channel = await resolveTextChannel(guild, args.channel_id);
       const msg = await channel.messages.fetch(args.message_id);
-      await msg.edit(args.content);
-      return { edited_message_id: args.message_id, channel_id: args.channel_id, new_content: args.content };
+      const payload = buildMessagePayload(args);
+      await msg.edit(payload);
+      return { edited_message_id: args.message_id, channel_id: channel.id };
+    }
+    case "pin_message": {
+      const channel = await resolveTextChannel(guild, args.channel_id);
+      const msg = await channel.messages.fetch(args.message_id);
+      await msg.pin();
+      return { pinned_message_id: args.message_id, channel_id: channel.id, channel_name: channel.name };
+    }
+    case "unpin_message": {
+      const channel = await resolveTextChannel(guild, args.channel_id);
+      const msg = await channel.messages.fetch(args.message_id);
+      await msg.unpin();
+      return { unpinned_message_id: args.message_id, channel_id: channel.id, channel_name: channel.name };
     }
     case "mass_send_message": {
       const results = await Promise.allSettled(args.messages.map(async (m) => {
         const channel = await resolveTextChannel(guild, m.channel_id);
-        const msg = await channel.send(m.content);
-        return { message_id: msg.id, channel_id: m.channel_id };
+        const payload = buildMessagePayload(m);
+        const msg = await channel.send(payload);
+        return { message_id: msg.id, channel_id: channel.id };
       }));
       return results.map((r, i) => r.status === "fulfilled" ? { channel_id: args.messages[i].channel_id, message_id: r.value.message_id, status: "sent" } : { channel_id: args.messages[i].channel_id, status: "failed", error: r.reason?.message });
     }
@@ -559,7 +859,13 @@ async function handleTool(name, args) {
       const channel = await resolveTextChannel(guild, args.channel_id);
       const msg = await channel.messages.fetch(args.message_id);
       await msg.delete();
-      return { deleted_message_id: args.message_id, channel_id: args.channel_id };
+      return { deleted_message_id: args.message_id, channel_id: channel.id };
+    }
+    case "bulk_delete_messages": {
+      const channel = await resolveTextChannel(guild, args.channel_id);
+      if (args.message_ids.length > 100) throw new Error("bulk_delete_messages supports at most 100 messages at once");
+      const deleted = await channel.bulkDelete(args.message_ids, true);
+      return { channel_id: channel.id, channel_name: channel.name, deleted_count: deleted.size, requested: args.message_ids.length };
     }
     case "mass_delete_message": {
       const channel = await resolveTextChannel(guild, args.channel_id);
@@ -573,6 +879,17 @@ async function handleTool(name, args) {
       return { message_id: args.message_id, emoji: args.emoji, status: "reacted" };
     }
 
+    case "list_roles": {
+      await guild.roles.fetch();
+      return {
+        guild_id: guild.id,
+        guild_name: guild.name,
+        roles: guild.roles.cache
+          .filter((r) => r.name !== "@everyone")
+          .sort((a, b) => b.position - a.position)
+          .map((r) => ({ id: r.id, name: r.name, color: r.hexColor, hoist: r.hoist, mentionable: r.mentionable, position: r.position, member_count: r.members.size })),
+      };
+    }
     case "create_role": {
       const role = await guild.roles.create({ name: args.name, color: args.color || null, hoist: args.hoist || false, mentionable: args.mentionable || false });
       return { id: role.id, name: role.name, color: role.hexColor, hoist: role.hoist, mentionable: role.mentionable };
@@ -605,6 +922,28 @@ async function handleTool(name, args) {
       return { user_id: member.id, username: member.user.username, role_id: role.id, role_name: role.name, status: "removed" };
     }
 
+    case "list_members": {
+      const limit = Math.min(args.limit || 100, 1000);
+      await guild.members.fetch({ limit });
+      let members = [...guild.members.cache.values()];
+      if (args.role_id) {
+        const role = resolveRole(guild, args.role_id);
+        members = members.filter((m) => m.roles.cache.has(role.id));
+      }
+      return {
+        guild_id: guild.id,
+        total: members.length,
+        members: members.slice(0, limit).map((m) => ({
+          id: m.id,
+          username: m.user.username,
+          display_name: m.displayName,
+          is_bot: m.user.bot,
+          joined_at: m.joinedAt,
+          roles: m.roles.cache.filter((r) => r.name !== "@everyone").map((r) => ({ id: r.id, name: r.name })),
+        })),
+      };
+    }
+
     case "server_analysis": {
       await guild.members.fetch();
       const channels = guild.channels.cache;
@@ -618,7 +957,7 @@ async function handleTool(name, args) {
         bots: members.filter((m) => m.user.bot).size,
         online_members: members.filter((m) => m.presence?.status && m.presence.status !== "offline").size,
         boost_level: guild.premiumTier, boost_count: guild.premiumSubscriptionCount,
-        channels: { total: channels.size, text: channels.filter((c) => c.type === ChannelType.GuildText).size, voice: channels.filter((c) => c.type === ChannelType.GuildVoice).size, categories: channels.filter((c) => c.type === ChannelType.GuildCategory).size, list: channels.map((c) => ({ id: c.id, name: c.name, type: c.type })) },
+        channels: { total: channels.size, text: channels.filter((c) => c.type === ChannelType.GuildText).size, voice: channels.filter((c) => c.type === ChannelType.GuildVoice).size, categories: channels.filter((c) => c.type === ChannelType.GuildCategory).size, forums: channels.filter((c) => c.type === ChannelType.GuildForum).size, list: channels.map((c) => ({ id: c.id, name: c.name, type: c.type })) },
         roles: { total: roles.size, list: roles.filter((r) => r.name !== "@everyone").map((r) => ({ id: r.id, name: r.name, members: r.members.size, color: r.hexColor })) },
         features: guild.features, icon_url: guild.iconURL(), banner_url: guild.bannerURL(),
       };
@@ -754,6 +1093,19 @@ async function handleTool(name, args) {
       const locked = args.locked || false;
       await thread.edit({ archived, locked });
       return { thread_id: thread.id, name: thread.name, archived, locked };
+    }
+    case "create_forum_post": {
+      const channel = guild.channels.cache.get(args.channel_id) ||
+        guild.channels.cache.find((c) => c.name.toLowerCase() === args.channel_id.toLowerCase());
+      if (!channel) throw new Error(`Channel "${args.channel_id}" not found`);
+      if (channel.type !== ChannelType.GuildForum) throw new Error(`Channel "${channel.name}" is not a Forum channel`);
+      const messagePayload = buildMessagePayload({ content: args.content, embed: args.embed });
+      const thread = await channel.threads.create({
+        name: args.name,
+        autoArchiveDuration: args.auto_archive_duration || 1440,
+        message: messagePayload,
+      });
+      return { thread_id: thread.id, name: thread.name, parent_channel_id: thread.parentId, created_at: thread.createdAt };
     }
 
     case "kick_user": {
