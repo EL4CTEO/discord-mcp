@@ -1,6 +1,6 @@
 # Discord MCP
 
-Extensive Discord MCP server for Claude. Manage channels, messages, roles, threads, and users — with both single and mass parallel operations.
+Extensive Discord MCP server for Claude — optimized for autonomous task workflows. Manage channels, messages, roles, threads, members, and more with both single and mass parallel operations.
 
 ## Setup
 
@@ -72,10 +72,13 @@ After `set_guild`, you never need to specify `guild_id` again.
 
 | Tool | Description |
 |------|-------------|
-| `list_channels` | List all channels with IDs, names, types, and categories. Use to resolve a channel name to an ID. |
+| `list_channels` | List all channels with IDs, names, types, and categories. Accepts channel name to resolve to ID. |
 | `create_channel` | Create a single text channel. |
 | `create_category` | Create a single category. |
 | `create_voice_channel` | Create a single voice channel. |
+| `rename_channel` | Rename an existing channel or category. |
+| `set_channel_topic` | Set or update a text channel's topic. |
+| `move_channel` | Move a channel into a different category. |
 | `mass_channels` | Create multiple text channels in parallel. |
 | `mass_categories` | Create multiple categories in parallel. |
 | `mass_voice_channels` | Create multiple voice channels in parallel. |
@@ -86,25 +89,39 @@ After `set_guild`, you never need to specify `guild_id` again.
 
 | Tool | Description |
 |------|-------------|
-| `send_message` | Send a message to a channel. If channel_id is known, call directly — no prerequisite calls needed. |
-| `get_messages` | Fetch recent messages from a channel or thread (default 20, max 100). |
-| `reply_message` | Reply to a specific message, pinging the author. |
-| `edit_message` | Edit a message previously sent by the bot. |
+| `send_message` | Send a message (+ optional embed) to a channel. Accepts channel name or ID. |
+| `get_messages` | Fetch recent messages (default 20, max 100). Supports `before_message_id` and `after_message_id` pagination. |
+| `get_message` | Fetch a single message by ID. |
+| `search_messages` | Search for messages containing a keyword in a channel. |
+| `reply_message` | Reply to a specific message, pinging the author. Supports embeds. |
+| `edit_message` | Edit a bot message. Supports embeds. |
+| `pin_message` | Pin a message in a channel. |
+| `unpin_message` | Unpin a message from a channel. |
 | `delete_message` | Delete a specific message. |
-| `mass_send_message` | Send messages to multiple channels in parallel. |
-| `mass_delete_message` | Delete multiple messages from a channel in parallel. |
+| `bulk_delete_messages` | Delete up to 100 messages at once using Discord's native API (messages must be <14 days old). |
+| `mass_send_message` | Send messages (+ optional embeds) to multiple channels in parallel. |
+| `mass_delete_message` | Delete multiple messages in parallel (use `bulk_delete_messages` for newer messages). |
 | `add_reaction` | Add an emoji reaction to a message. |
+| `send_dm` | Send a DM to a user by snowflake ID. Supports embeds. |
+| `send_dm_by_username` | Send a DM to a user by username or display name. |
 
 ### Roles
 
 | Tool | Description |
 |------|-------------|
+| `list_roles` | List all roles with IDs, names, colors, positions, and member counts. |
 | `create_role` | Create a single role (with optional color, hoist, mentionable). |
 | `delete_role` | Delete a role by ID. |
 | `mass_create_role` | Create multiple roles in parallel. |
 | `mass_delete_role` | Delete multiple roles in parallel. |
 | `assign_role` | Assign a role to a user. Accepts username or snowflake ID. |
 | `remove_role` | Remove a role from a user. Accepts username or snowflake ID. |
+
+### Members
+
+| Tool | Description |
+|------|-------------|
+| `list_members` | List guild members with IDs, usernames, display names, and roles. Supports role filter and limit. |
 
 ### Threads
 
@@ -115,6 +132,7 @@ After `set_guild`, you never need to specify `guild_id` again.
 | `list_threads` | List active (and optionally archived) threads. |
 | `thread_analysis` | Analyze all messages in a thread: participants, word frequency, full history. |
 | `archive_thread` | Archive or unarchive (and optionally lock) a thread. |
+| `create_forum_post` | Create a new post in a Forum channel (supports embeds). |
 
 ### Analysis
 
@@ -137,11 +155,38 @@ After `set_guild`, you never need to specify `guild_id` again.
 
 ---
 
+## Embed Support
+
+`send_message`, `reply_message`, `edit_message`, `mass_send_message`, `send_dm`, `send_dm_by_username`, and `create_forum_post` all support an optional `embed` object:
+
+```json
+{
+  "channel_id": "...",
+  "content": "Optional text above the embed",
+  "embed": {
+    "title": "My Title",
+    "description": "My description",
+    "color": "#5865F2",
+    "fields": [
+      { "name": "Field 1", "value": "Value 1", "inline": true },
+      { "name": "Field 2", "value": "Value 2", "inline": true }
+    ],
+    "footer": "Footer text",
+    "timestamp": true
+  }
+}
+```
+
+---
+
 ## Efficiency Tips
 
 - **`set_guild` once** — it persists to disk, no need to repeat it
 - **Use `list_channels`** to find a channel ID by name, not `server_analysis`
+- **Use `list_roles`** to find a role ID by name, not `server_analysis`
+- **Channel name resolution** — most tools accept channel name or ID directly
 - **Use `mass_*` tools** when operating on multiple targets — they run in parallel
+- **Use `bulk_delete_messages`** for fast deletion of recent messages (up to 100 at once)
 - **If you have a channel ID**, call `send_message` directly with no other calls first
 
 ---
@@ -153,15 +198,15 @@ After `set_guild`, you never need to specify `guild_id` again.
 | `View Channel` | all read operations |
 | `Send Messages` | send_message, reply_message, mass_send_message |
 | `Add Reactions` | add_reaction |
-| `Read Message History` | get_messages, channel_analysis, thread_analysis |
-| `Manage Messages` | delete_message, mass_delete_message |
-| `Manage Channels` | create/delete channels and categories |
+| `Read Message History` | get_messages, get_message, search_messages, channel_analysis, thread_analysis |
+| `Manage Messages` | delete_message, bulk_delete_messages, mass_delete_message, pin_message, unpin_message |
+| `Manage Channels` | create/delete/rename/move channels and categories |
 | `Manage Roles` | create_role, delete_role, assign_role, remove_role |
 | `Kick Members` | kick_user |
 | `Ban Members` | ban_user, unban_user, mass_ban |
 | `Moderate Members` | time_out_user, mass_time_out |
-| Privileged: **Server Members** | server_analysis, user_analysis |
-| Privileged: **Message Content** | channel_analysis, user_analysis |
+| Privileged: **Server Members** | server_analysis, user_analysis, list_members |
+| Privileged: **Message Content** | channel_analysis, user_analysis, search_messages |
 | Privileged: **Presence** | server_analysis (online count) |
 
 **Permission integer:** `1099780140118`
