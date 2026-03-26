@@ -1,7 +1,7 @@
 {
   "name": "discord-mcp",
-  "version": "1.0.0",
-  "description": "Extensive Discord MCP server for Claude",
+  "version": "2.0.0",
+  "description": "Extensive Discord MCP server for Claude — optimized for autonomous task workflows",
   "main": "index.js",
   "bin": {
     "discord-mcp": "index.js"
