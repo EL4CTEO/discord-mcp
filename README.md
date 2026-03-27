@@ -49,6 +49,40 @@ Config locations:
 
 > **Tip:** Using `npx -y github:EL4CTEO/discord-mcp` also works but downloads every time, which can cause startup timeouts. Global install is recommended.
 
+### 4. Configure Claude Code (CLI)
+
+Add to your Claude Code settings at `~/.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "discord": {
+      "command": "npx",
+      "args": ["-y", "github:EL4CTEO/discord-mcp"],
+      "env": {
+        "DISCORD_BOT_TOKEN": "YOUR_TOKEN"
+      }
+    }
+  }
+}
+```
+
+Or use the `update-config` skill to configure it automatically:
+
+```bash
+/update-config
+```
+
+Then set your environment variable:
+
+```bash
+export DISCORD_BOT_TOKEN="your_bot_token_here"
+```
+
+Config locations:
+- **macOS/Linux**: `~/.claude/settings.json`
+- **Windows**: `%USERPROFILE%\.claude\settings.json`
+
 ---
 
 ## First Use
