@@ -8,12 +8,15 @@ Extensive Discord MCP server for Claude — optimized for autonomous task workfl
 
 1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
 2. Create a new application → Bot
-3. Enable these **Privileged Intents**: `Server Members Intent`, `Message Content Intent`, `Presence Intent`
+3. Enable these **Privileged Intents**:
+   - `Server Members Intent`
+   - `Message Content Intent`
+   - `Presence Intent`
 4. Copy the bot token
 5. Invite the bot (replace `YOUR_CLIENT_ID`):
 
 ```
-https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=1099780140118&scope=bot
+https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=274945035094&scope=bot
 ```
 
 **Required permissions:** `Kick Members`, `Ban Members`, `Manage Channels`, `View Channel`, `Send Messages`, `Manage Messages`, `Add Reactions`, `Read Message History`, `Manage Roles`, `Moderate Members (Timeout)`
@@ -209,4 +212,4 @@ After `set_guild`, you never need to specify `guild_id` again.
 | Privileged: **Message Content** | channel_analysis, user_analysis, search_messages |
 | Privileged: **Presence** | server_analysis (online count) |
 
-**Permission integer:** `1099780140118`
+**Permission integer:** `274945035094`
