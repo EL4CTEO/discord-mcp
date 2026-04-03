@@ -65,11 +65,13 @@ Add to your `claude_desktop_config.json`:
 
 ```json
 {
-  "discord": {
-    "command": "npx",
-    "args": ["-y", "--prefer-online", "github:EL4CTEO/discord-mcp"],
-    "env": {
-      "DISCORD_BOT_TOKEN": "YOUR_TOKEN"
+  "mcpServers": {
+    "discord": {
+      "command": "npx",
+      "args": ["-y", "--prefer-online", "github:EL4CTEO/discord-mcp"],
+      "env": {
+        "DISCORD_BOT_TOKEN": "YOUR_TOKEN"
+      }
     }
   }
 }
