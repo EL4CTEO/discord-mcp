@@ -16,7 +16,7 @@ Extensive Discord MCP server for Claude — **84 tools** optimized for autonomou
 5. Invite the bot (replace `YOUR_CLIENT_ID`):
 
 ```
-https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=1128771025857783&scope=bot
+https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=564386553359607&scope=bot
 ```
 
 **Required permissions (25):**
@@ -328,7 +328,7 @@ After `set_guild`, you never need to specify `guild_id` again.
 
 ## Required Bot Permissions
 
-**Permission integer:** `1128771025857783`
+**Permission integer:** `564386553359607`
 
 | Permission | Used by |
 |-----------|---------|
