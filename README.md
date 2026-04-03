@@ -131,7 +131,7 @@ You can also add it directly to your `.mcp.json` file (project root or `~/.claud
   "mcpServers": {
     "discord": {
       "command": "npx",
-      "args": ["-y", "github:EL4CTEO/discord-mcp"],
+      "args": ["-y", "--prefer-online", "github:EL4CTEO/discord-mcp"],
       "env": {
         "DISCORD_BOT_TOKEN": "YOUR_TOKEN"
       }
