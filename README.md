@@ -16,10 +16,10 @@ Extensive Discord MCP server for Claude — **84 tools** optimized for autonomou
 5. Invite the bot (replace `YOUR_CLIENT_ID`):
 
 ```
-https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=1574042070263&scope=bot
+https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=1129045906943223&scope=bot
 ```
 
-**Required permissions (28):**
+**Required permissions (29):**
 
 | Permission | Used by |
 |-----------|---------|
@@ -32,7 +32,8 @@ https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=15
 | View Audit Log | `get_audit_log` |
 | View Channel | All read operations |
 | Send Messages | `send_message`, `reply_message`, `mass_send_message`, DMs |
-| Manage Messages | `delete_message`, `bulk_delete_messages`, `pin_message`, `unpin_message` |
+| Manage Messages | `delete_message`, `bulk_delete_messages` |
+| Pin Messages | `pin_message`, `unpin_message` |
 | Embed Links | Message embeds (`send_message`, `reply_message`, `edit_message`, DMs) |
 | Attach Files | Future attachment support |
 | Read Message History | `get_messages`, `search_messages`, `channel_analysis`, `user_analysis` |
@@ -331,7 +332,7 @@ After `set_guild`, you never need to specify `guild_id` again.
 
 ## Required Bot Permissions
 
-**Permission integer:** `1574042070263`
+**Permission integer:** `1129045906943223`
 
 | Permission | Used by |
 |-----------|---------|
@@ -344,7 +345,8 @@ After `set_guild`, you never need to specify `guild_id` again.
 | View Audit Log | `get_audit_log` |
 | View Channel | All read operations |
 | Send Messages | `send_message`, `reply_message`, `mass_send_message`, DMs |
-| Manage Messages | `delete_message`, `bulk_delete_messages`, `pin_message`, `unpin_message` |
+| Manage Messages | `delete_message`, `bulk_delete_messages` |
+| Pin Messages | `pin_message`, `unpin_message` |
 | Embed Links | Message embeds in all send tools |
 | Attach Files | Future attachment support |
 | Read Message History | `get_messages`, `search_messages`, analysis tools |
