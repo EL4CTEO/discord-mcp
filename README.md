@@ -109,7 +109,7 @@ Config locations:
 Add as a **user-scoped** MCP server (available across all projects):
 
 ```bash
-claude mcp add discord -s user -- npx -y github:EL4CTEO/discord-mcp
+claude mcp add discord -s user -- npx -y --prefer-online github:EL4CTEO/discord-mcp
 ```
 
 Then set the bot token as an environment variable. Add this to your shell profile (`~/.bashrc`, `~/.zshrc`, or `~/.profile`):
@@ -121,7 +121,7 @@ export DISCORD_BOT_TOKEN="YOUR_TOKEN"
 Or, if you prefer **project-scoped** (only available in the current project):
 
 ```bash
-claude mcp add discord -- npx -y github:EL4CTEO/discord-mcp
+claude mcp add discord -- npx -y --prefer-online github:EL4CTEO/discord-mcp
 ```
 
 You can also add it directly to your `.mcp.json` file (project root or `~/.claude/.mcp.json` for user scope):
