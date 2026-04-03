@@ -27,7 +27,9 @@ https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=16
 npm install -g github:EL4CTEO/discord-mcp
 ```
 
-### 3. Configure Claude Desktop
+### 3. Configure your client
+
+#### Claude Desktop
 
 Add to your `claude_desktop_config.json`:
 
@@ -48,6 +50,48 @@ Config locations:
 - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
 > **Tip:** Global install is recommended over `npx` to avoid startup timeouts.
+
+#### Claude Code (CLI)
+
+Add as a **user-scoped** MCP server (available across all projects):
+
+```bash
+claude mcp add discord -s user -- npx -y github:EL4CTEO/discord-mcp
+```
+
+Then set the bot token as an environment variable. Add this to your shell profile (`~/.bashrc`, `~/.zshrc`, or `~/.profile`):
+
+```bash
+export DISCORD_BOT_TOKEN="YOUR_TOKEN"
+```
+
+Or, if you prefer **project-scoped** (only available in the current project):
+
+```bash
+claude mcp add discord -- npx -y github:EL4CTEO/discord-mcp
+```
+
+You can also add it directly to your `.mcp.json` file (project root or `~/.claude/.mcp.json` for user scope):
+
+```json
+{
+  "mcpServers": {
+    "discord": {
+      "command": "npx",
+      "args": ["-y", "github:EL4CTEO/discord-mcp"],
+      "env": {
+        "DISCORD_BOT_TOKEN": "YOUR_TOKEN"
+      }
+    }
+  }
+}
+```
+
+To verify it's connected:
+
+```bash
+claude mcp list
+```
 
 ---
 
