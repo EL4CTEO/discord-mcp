@@ -16,10 +16,10 @@ Extensive Discord MCP server for Claude — **84 tools** optimized for autonomou
 5. Invite the bot (replace `YOUR_CLIENT_ID`):
 
 ```
-https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=1129045906943223&scope=bot
+https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=1128771025857783&scope=bot
 ```
 
-**Required permissions (29):**
+**Required permissions (25):**
 
 | Permission | Used by |
 |-----------|---------|
@@ -35,12 +35,9 @@ https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=11
 | Manage Messages | `delete_message`, `bulk_delete_messages` |
 | Pin Messages | `pin_message`, `unpin_message` |
 | Embed Links | Message embeds (`send_message`, `reply_message`, `edit_message`, DMs) |
-| Attach Files | Future attachment support |
 | Read Message History | `get_messages`, `search_messages`, `channel_analysis`, `user_analysis` |
 | Mention Everyone | `@everyone` / `@here` in messages |
 | Use External Emojis | External emojis in messages |
-| Connect | Voice channel operations |
-| Speak | Voice channel operations |
 | Change Nickname | `set_nickname` (self) |
 | Manage Nicknames | `set_nickname` (other members) |
 | Manage Roles | `create/edit/delete roles`, `assign_role`, `remove_role` |
@@ -49,7 +46,6 @@ https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=11
 | Manage Events | `create/delete scheduled events` |
 | Manage Threads | `archive_thread`, thread management |
 | Create Public Threads | `create_thread`, `create_forum_post` |
-| Use External Stickers | External stickers in messages |
 | Send Messages in Threads | `send_thread_message` |
 | Moderate Members | `time_out_user`, `remove_timeout`, `mass_time_out` |
 
@@ -332,7 +328,7 @@ After `set_guild`, you never need to specify `guild_id` again.
 
 ## Required Bot Permissions
 
-**Permission integer:** `1129045906943223`
+**Permission integer:** `1128771025857783`
 
 | Permission | Used by |
 |-----------|---------|
@@ -348,12 +344,9 @@ After `set_guild`, you never need to specify `guild_id` again.
 | Manage Messages | `delete_message`, `bulk_delete_messages` |
 | Pin Messages | `pin_message`, `unpin_message` |
 | Embed Links | Message embeds in all send tools |
-| Attach Files | Future attachment support |
 | Read Message History | `get_messages`, `search_messages`, analysis tools |
 | Mention Everyone | `@everyone` / `@here` in messages |
 | Use External Emojis | External emojis in messages |
-| Connect | Voice channel operations |
-| Speak | Voice channel operations |
 | Change Nickname | `set_nickname` (self) |
 | Manage Nicknames | `set_nickname` (other members) |
 | Manage Roles | Role CRUD, `assign_role`, `remove_role` |
@@ -362,7 +355,6 @@ After `set_guild`, you never need to specify `guild_id` again.
 | Manage Events | Scheduled events CRUD |
 | Manage Threads | `archive_thread`, thread management |
 | Create Public Threads | `create_thread`, `create_forum_post` |
-| Use External Stickers | External stickers in messages |
 | Send Messages in Threads | `send_thread_message` |
 | Moderate Members | `time_out_user`, `remove_timeout`, `mass_time_out` |
 | Privileged: **Server Members** | `server_analysis`, `user_analysis`, `list_members`, `get_member` |
