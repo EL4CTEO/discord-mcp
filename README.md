@@ -16,10 +16,41 @@ Extensive Discord MCP server for Claude — **84 tools** optimized for autonomou
 5. Invite the bot (replace `YOUR_CLIENT_ID`):
 
 ```
-https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=1644972474614&scope=bot
+https://discord.com/api/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=1574042070263&scope=bot
 ```
 
-**Required permissions:** Kick Members, Ban Members, Manage Channels, Manage Roles, Manage Webhooks, Manage Guild Expressions, View Channel, Send Messages, Manage Messages, Read Message History, Add Reactions, Moderate Members, Create Invite, Manage Events
+**Required permissions (28):**
+
+| Permission | Used by |
+|-----------|---------|
+| Create Instant Invite | `create_invite` |
+| Kick Members | `kick_user` |
+| Ban Members | `ban_user`, `unban_user`, `list_bans`, `mass_ban` |
+| Manage Channels | `create/delete/edit/clone/rename/move channels`, `set_channel_permissions` |
+| Manage Guild | `list_invites`, `delete_invite` |
+| Add Reactions | `add_reaction`, `remove_reaction` |
+| View Audit Log | `get_audit_log` |
+| View Channel | All read operations |
+| Send Messages | `send_message`, `reply_message`, `mass_send_message`, DMs |
+| Manage Messages | `delete_message`, `bulk_delete_messages`, `pin_message`, `unpin_message` |
+| Embed Links | Message embeds (`send_message`, `reply_message`, `edit_message`, DMs) |
+| Attach Files | Future attachment support |
+| Read Message History | `get_messages`, `search_messages`, `channel_analysis`, `user_analysis` |
+| Mention Everyone | `@everyone` / `@here` in messages |
+| Use External Emojis | External emojis in messages |
+| Connect | Voice channel operations |
+| Speak | Voice channel operations |
+| Change Nickname | `set_nickname` (self) |
+| Manage Nicknames | `set_nickname` (other members) |
+| Manage Roles | `create/edit/delete roles`, `assign_role`, `remove_role` |
+| Manage Webhooks | `create/list/delete webhooks` |
+| Manage Emojis & Stickers | `create/delete emojis` |
+| Manage Events | `create/delete scheduled events` |
+| Manage Threads | `archive_thread`, thread management |
+| Create Public Threads | `create_thread`, `create_forum_post` |
+| Use External Stickers | External stickers in messages |
+| Send Messages in Threads | `send_thread_message` |
+| Moderate Members | `time_out_user`, `remove_timeout`, `mass_time_out` |
 
 ### 2. Install globally
 
@@ -124,7 +155,7 @@ After `set_guild`, you never need to specify `guild_id` again.
 | `create_channel` | Create a text channel (supports NSFW, slowmode, topic, category). |
 | `create_category` | Create a category. |
 | `create_voice_channel` | Create a voice channel (supports bitrate, user limit). |
-| `create_announcement_channel` | Create an announcement (news) channel. |
+| `create_announcement_channel` | Create an announcement (news) channel. Requires Community-enabled guild. |
 | `edit_channel` | Edit any channel property: name, topic, NSFW, slowmode, bitrate, user_limit, position, parent category, lock permissions. |
 | `rename_channel` | Rename a channel or category. |
 | `set_channel_topic` | Set or clear a text channel's topic. |
@@ -300,27 +331,41 @@ After `set_guild`, you never need to specify `guild_id` again.
 
 ## Required Bot Permissions
 
+**Permission integer:** `1574042070263`
+
 | Permission | Used by |
 |-----------|---------|
-| View Channel | all read operations |
-| Send Messages | send_message, reply, mass_send, DMs |
-| Add Reactions | add_reaction, remove_reaction |
-| Read Message History | get_messages, search, analysis tools |
-| Manage Messages | delete, bulk_delete, pin/unpin |
-| Manage Channels | create/delete/edit/clone/rename/move channels, set_channel_permissions |
-| Manage Roles | create/edit/delete roles, assign/remove role |
-| Manage Webhooks | create/list/delete webhooks |
-| Manage Guild Expressions | create/delete emojis |
-| Create Invite | create_invite |
-| Kick Members | kick_user |
-| Ban Members | ban_user, unban_user, list_bans, mass_ban |
-| Moderate Members | time_out_user, remove_timeout, mass_time_out |
-| Manage Events | create/delete scheduled events |
-| Privileged: **Server Members** | server_analysis, user_analysis, list_members, get_member |
-| Privileged: **Message Content** | channel_analysis, user_analysis, search_messages |
-| Privileged: **Presence** | server_analysis (online count), get_member (presence) |
-
-**Permission integer:** `1644972474614`
+| Create Instant Invite | `create_invite` |
+| Kick Members | `kick_user` |
+| Ban Members | `ban_user`, `unban_user`, `list_bans`, `mass_ban` |
+| Manage Channels | Channel CRUD, `set_channel_permissions` |
+| Manage Guild | `list_invites`, `delete_invite` |
+| Add Reactions | `add_reaction`, `remove_reaction` |
+| View Audit Log | `get_audit_log` |
+| View Channel | All read operations |
+| Send Messages | `send_message`, `reply_message`, `mass_send_message`, DMs |
+| Manage Messages | `delete_message`, `bulk_delete_messages`, `pin_message`, `unpin_message` |
+| Embed Links | Message embeds in all send tools |
+| Attach Files | Future attachment support |
+| Read Message History | `get_messages`, `search_messages`, analysis tools |
+| Mention Everyone | `@everyone` / `@here` in messages |
+| Use External Emojis | External emojis in messages |
+| Connect | Voice channel operations |
+| Speak | Voice channel operations |
+| Change Nickname | `set_nickname` (self) |
+| Manage Nicknames | `set_nickname` (other members) |
+| Manage Roles | Role CRUD, `assign_role`, `remove_role` |
+| Manage Webhooks | Webhook CRUD |
+| Manage Emojis & Stickers | `create_emoji`, `delete_emoji` |
+| Manage Events | Scheduled events CRUD |
+| Manage Threads | `archive_thread`, thread management |
+| Create Public Threads | `create_thread`, `create_forum_post` |
+| Use External Stickers | External stickers in messages |
+| Send Messages in Threads | `send_thread_message` |
+| Moderate Members | `time_out_user`, `remove_timeout`, `mass_time_out` |
+| Privileged: **Server Members** | `server_analysis`, `user_analysis`, `list_members`, `get_member` |
+| Privileged: **Message Content** | `channel_analysis`, `user_analysis`, `search_messages` |
+| Privileged: **Presence** | `server_analysis` (online count), `get_member` (presence) |
 
 ---
 
