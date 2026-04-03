@@ -63,6 +63,29 @@ npm install -g github:EL4CTEO/discord-mcp
 
 Add to your `claude_desktop_config.json`:
 
+**Option 1: With global install (Recommended — avoids startup timeouts)**
+
+First, install globally:
+```bash
+npm install -g github:EL4CTEO/discord-mcp
+```
+
+Then add to `claude_desktop_config.json`:
+```json
+{
+  "mcpServers": {
+    "discord": {
+      "command": "discord-mcp",
+      "env": {
+        "DISCORD_BOT_TOKEN": "YOUR_TOKEN"
+      }
+    }
+  }
+}
+```
+
+**Option 2: With npx (Fallback, no pre-install needed)**
+
 ```json
 {
   "mcpServers": {
@@ -80,8 +103,6 @@ Add to your `claude_desktop_config.json`:
 Config locations:
 - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-
-> **Tip:** Global install is recommended over `npx` to avoid startup timeouts.
 
 #### Claude Code (CLI)
 
