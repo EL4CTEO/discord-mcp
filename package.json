@@ -1,6 +1,6 @@
 {
   "name": "discord-mcp",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Extensive Discord MCP server for Claude — 84 tools for autonomous task workflows",
   "main": "index.js",
   "bin": {
