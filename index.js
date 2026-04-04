@@ -57,7 +57,7 @@ const discordReady = new Promise((resolve, reject) => {
 });
 
 const server = new Server(
-  { name: "discord-mcp", version: "3.0.0" },
+  { name: "discord-mcp", version: "3.1.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -175,6 +175,18 @@ function buildMessagePayload(args) {
   return payload;
 }
 
+function mapAttachments(m) {
+  return [...m.attachments.values()].map(a => ({ name: a.name, url: a.url, size: a.size }));
+}
+
+function mapEmbeds(m) {
+  return m.embeds.map(e => ({ title: e.title, description: e.description?.slice(0, 300), url: e.url, image: e.image?.url, thumbnail: e.thumbnail?.url }));
+}
+
+function mapEmbedsShort(m) {
+  return m.embeds.map(e => ({ title: e.title, url: e.url, image: e.image?.url }));
+}
+
 const tools = [
   { name: "set_guild", description: "Persist a default guild (server) ID to disk. Call this ONCE \u2014 it survives restarts. After setting, all other tools work without specifying guild_id.", inputSchema: { type: "object", properties: { guild_id: { type: "string" } }, required: ["guild_id"] } },
   { name: "get_guild", description: "Get the persisted default guild ID. Call only when unsure if a default has already been set.", inputSchema: { type: "object", properties: {} } },
@@ -262,6 +274,35 @@ const tools = [
   { name: "delete_scheduled_event", description: "Delete a scheduled event by ID", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, event_id: { type: "string" } }, required: ["event_id"] } },
 ];
 
+const BATCHABLE_TOOLS = new Set([
+  "get_messages", "get_message", "search_messages", "get_pinned_messages",
+  "send_message", "reply_message", "edit_message", "delete_message",
+  "pin_message", "unpin_message", "crosspost_message",
+  "add_reaction", "remove_reaction", "get_reactions",
+  "send_dm", "get_dm_history",
+  "get_member", "set_nickname", "assign_role", "remove_role",
+  "kick_user", "ban_user", "unban_user", "time_out_user",
+  "rename_channel", "edit_channel", "set_channel_topic", "move_channel",
+  "clone_channel", "delete", "create_channel", "create_invite",
+  "create_role", "edit_role", "delete_role",
+  "create_thread", "archive_thread", "send_thread_message",
+  "create_webhook", "delete_webhook", "send_webhook_message",
+  "create_emoji", "delete_emoji",
+  "delete_scheduled_event",
+]);
+
+for (const tool of tools) {
+  if (BATCHABLE_TOOLS.has(tool.name)) {
+    const itemProps = { ...tool.inputSchema.properties };
+    delete itemProps.guild_id;
+    tool.inputSchema.properties.requests = {
+      type: "array",
+      description: "Batch mode: array of per-item params. If provided, executes all in parallel and returns array of results.",
+      items: { type: "object", properties: itemProps }
+    };
+  }
+}
+
 const AUDIT_LOG_ACTIONS = {
   CHANNEL_CREATE: AuditLogEvent.ChannelCreate, CHANNEL_UPDATE: AuditLogEvent.ChannelUpdate, CHANNEL_DELETE: AuditLogEvent.ChannelDelete,
   MEMBER_KICK: AuditLogEvent.MemberKick, MEMBER_BAN_ADD: AuditLogEvent.MemberBanAdd, MEMBER_BAN_REMOVE: AuditLogEvent.MemberBanRemove,
@@ -281,7 +322,7 @@ async function handleTool(name, args) {
     case "get_guild": { const config = loadConfig(); if (!config.default_guild_id) return { default_guild_id: null, message: "No default guild set. Use set_guild." }; try { const guild = getGuild(config.default_guild_id); return { default_guild_id: config.default_guild_id, guild_name: guild.name, member_count: guild.memberCount }; } catch { return { default_guild_id: config.default_guild_id, message: "Saved but bot may no longer be in this server" }; } }
     case "list_guilds": { const config = loadConfig(); return { guilds: discord.guilds.cache.map((g) => ({ id: g.id, name: g.name, member_count: g.memberCount, is_default: g.id === config.default_guild_id })), default_guild_id: config.default_guild_id || null }; }
     case "send_dm": { const user = await discord.users.fetch(args.user_id); const dmChannel = await user.createDM(); const payload = buildMessagePayload(args); const msg = await dmChannel.send(payload); return { message_id: msg.id, user_id: args.user_id, username: user.username, status: "sent" }; }
-    case "get_dm_history": { const user = await discord.users.fetch(args.user_id); const dmChannel = await user.createDM(); const limit = Math.min(args.limit || 20, 100); const fetchOpts = { limit }; if (args.before_message_id) fetchOpts.before = args.before_message_id; const messages = await dmChannel.messages.fetch(fetchOpts); return { user_id: args.user_id, username: user.username, messages: [...messages.values()].reverse().map((m) => ({ id: m.id, author: m.author.username, author_id: m.author.id, is_bot: m.author.bot, content: m.content, timestamp: m.createdAt, edited: !!m.editedAt, attachments: [...m.attachments.values()].map((a) => ({ name: a.name, url: a.url })), embeds: m.embeds.length })) }; }
+    case "get_dm_history": { const user = await discord.users.fetch(args.user_id); const dmChannel = await user.createDM(); const limit = Math.min(args.limit || 20, 100); const fetchOpts = { limit }; if (args.before_message_id) fetchOpts.before = args.before_message_id; const messages = await dmChannel.messages.fetch(fetchOpts); return { user_id: args.user_id, username: user.username, messages: [...messages.values()].reverse().map((m) => ({ id: m.id, author: m.author.username, author_id: m.author.id, is_bot: m.author.bot, content: m.content, timestamp: m.createdAt, edited: !!m.editedAt, attachments: mapAttachments(m), embeds: mapEmbeds(m) })) }; }
     case "bot_info": { const user = discord.user; return { id: user.id, username: user.username, discriminator: user.discriminator, avatar_url: user.displayAvatarURL(), guilds_count: discord.guilds.cache.size, uptime_seconds: Math.floor(discord.uptime / 1000), ready_at: discord.readyAt, ws_ping: discord.ws.ping }; }
     case "set_bot_status": { const presenceData = {}; if (args.status) presenceData.status = args.status; if (args.activity_name || args.activity_type) { presenceData.activities = [{ name: args.activity_name || "discord-mcp", type: ACTIVITY_TYPES[args.activity_type] ?? 0, ...(args.activity_url && { url: args.activity_url }) }]; } discord.user.setPresence(presenceData); return { status: args.status || "online", activity: args.activity_name || null, type: args.activity_type || null }; }
     case "delete_invite": { const invite = await discord.fetchInvite(args.invite_code); await invite.delete(); return { deleted: args.invite_code }; }
@@ -291,7 +332,7 @@ async function handleTool(name, args) {
   const guildId = resolveGuildId(args); const guild = getGuild(guildId);
   switch (name) {
     case "guild_info": { return { id: guild.id, name: guild.name, description: guild.description, icon_url: guild.iconURL({ size: 1024 }), banner_url: guild.bannerURL({ size: 1024 }), splash_url: guild.splashURL({ size: 1024 }), owner_id: guild.ownerId, member_count: guild.memberCount, verification_level: guild.verificationLevel, explicit_content_filter: guild.explicitContentFilter, afk_channel_id: guild.afkChannelId, afk_timeout: guild.afkTimeout, system_channel_id: guild.systemChannelId, rules_channel_id: guild.rulesChannelId, vanity_url_code: guild.vanityURLCode, premium_tier: guild.premiumTier, premium_subscription_count: guild.premiumSubscriptionCount, preferred_locale: guild.preferredLocale, features: guild.features, created_at: guild.createdAt, nsfw_level: guild.nsfwLevel, max_members: guild.maximumMembers }; }
-    case "list_channels": { const channels = guild.channels.cache; return { guild_id: guild.id, guild_name: guild.name, channels: channels.sort((a, b) => (a.position || 0) - (b.position || 0)).map((c) => ({ id: c.id, name: c.name, type: c.type === ChannelType.GuildText ? "text" : c.type === ChannelType.GuildVoice ? "voice" : c.type === ChannelType.GuildCategory ? "category" : c.type === ChannelType.GuildForum ? "forum" : c.type === ChannelType.GuildAnnouncement ? "announcement" : c.type === ChannelType.GuildStageVoice ? "stage" : String(c.type), category_id: c.parentId || null, category_name: c.parent?.name || null })) }; }
+    case "list_channels": { const channels = guild.channels.cache; return { guild_id: guild.id, guild_name: guild.name, channels: channels.sort((a, b) => (a.position || 0) - (b.position || 0)).map((c) => ({ id: c.id, name: c.name, type: c.type === ChannelType.GuildText ? "text" : c.type === ChannelType.GuildVoice ? "voice" : c.type === ChannelType.GuildCategory ? "category" : c.type === ChannelType.GuildForum ? "forum" : c.type === ChannelType.GuildAnnouncement ? "announcement" : c.type === ChannelType.GuildStageVoice ? "stage" : String(c.type), category_id: c.parentId || null, category_name: c.parent?.name || null, topic: c.topic || null, nsfw: c.nsfw || false })) }; }
     case "create_channel": { const opts = { name: args.name, type: ChannelType.GuildText, parent: args.category_id || null, topic: args.topic || null }; if (args.nsfw) opts.nsfw = true; if (args.slowmode) opts.rateLimitPerUser = args.slowmode; const ch = await guild.channels.create(opts); return { id: ch.id, name: ch.name, type: "text" }; }
     case "create_category": { const cat = await guild.channels.create({ name: args.name, type: ChannelType.GuildCategory }); return { id: cat.id, name: cat.name, type: "category" }; }
     case "create_voice_channel": { const opts = { name: args.name, type: ChannelType.GuildVoice, parent: args.category_id || null, userLimit: args.user_limit || 0 }; if (args.bitrate) opts.bitrate = args.bitrate; const vc = await guild.channels.create(opts); return { id: vc.id, name: vc.name, type: "voice" }; }
@@ -307,16 +348,16 @@ async function handleTool(name, args) {
     case "mass_voice_channels": { const results = await Promise.allSettled(args.channels.map((ch) => guild.channels.create({ name: ch.name, type: ChannelType.GuildVoice, parent: ch.category_id || null, userLimit: ch.user_limit || 0 }))); return results.map((r, i) => r.status === "fulfilled" ? { name: args.channels[i].name, id: r.value.id, status: "created" } : { name: args.channels[i].name, status: "failed", error: r.reason?.message }); }
     case "delete": { const ch = guild.channels.cache.get(args.channel_id); if (!ch) throw new Error(`Channel ${args.channel_id} not found`); const chName = ch.name; await ch.delete(args.reason || undefined); return { deleted: args.channel_id, name: chName }; }
     case "mass_delete": { const results = await Promise.allSettled(args.channel_ids.map(async (id) => { const ch = guild.channels.cache.get(id); if (!ch) throw new Error(`Channel ${id} not found`); const n = ch.name; await ch.delete(); return { id, name: n }; })); return results.map((r, i) => r.status === "fulfilled" ? { id: args.channel_ids[i], name: r.value.name, status: "deleted" } : { id: args.channel_ids[i], status: "failed", error: r.reason?.message }); }
-    case "get_messages": { const channel = await resolveTextChannel(guild, args.channel_id); const limit = Math.min(args.limit || 20, 100); const fetchOptions = { limit }; if (args.before_message_id) fetchOptions.before = args.before_message_id; if (args.after_message_id) fetchOptions.after = args.after_message_id; const messages = await channel.messages.fetch(fetchOptions); return { channel_id: channel.id, channel_name: channel.name, messages: [...messages.values()].reverse().map((m) => ({ id: m.id, author: m.author.username, author_id: m.author.id, display_name: m.member?.displayName || m.author.username, content: m.content, timestamp: m.createdAt, edited: !!m.editedAt, attachments: m.attachments.size, embeds: m.embeds.length, reactions: m.reactions.cache.map((r) => ({ emoji: r.emoji.toString(), count: r.count })), reply_to: m.reference?.messageId || null, pinned: m.pinned })) }; }
+    case "get_messages": { const channel = await resolveTextChannel(guild, args.channel_id); const limit = Math.min(args.limit || 20, 100); const fetchOptions = { limit }; if (args.before_message_id) fetchOptions.before = args.before_message_id; if (args.after_message_id) fetchOptions.after = args.after_message_id; const messages = await channel.messages.fetch(fetchOptions); return { channel_id: channel.id, channel_name: channel.name, messages: [...messages.values()].reverse().map((m) => ({ id: m.id, author: m.author.username, author_id: m.author.id, display_name: m.member?.displayName || m.author.username, content: m.content, timestamp: m.createdAt, edited: !!m.editedAt, attachments: mapAttachments(m), embeds: mapEmbeds(m), reactions: m.reactions.cache.map((r) => ({ emoji: r.emoji.toString(), count: r.count })), reply_to: m.reference?.messageId || null, pinned: m.pinned })) }; }
     case "get_message": { const channel = await resolveTextChannel(guild, args.channel_id); const m = await channel.messages.fetch(args.message_id); return { id: m.id, author: m.author.username, author_id: m.author.id, display_name: m.member?.displayName || m.author.username, content: m.content, timestamp: m.createdAt, edited: !!m.editedAt, attachments: [...m.attachments.values()].map((a) => ({ name: a.name, url: a.url, size: a.size })), embeds: m.embeds.map((e) => ({ title: e.title, description: e.description?.slice(0, 200), url: e.url })), reactions: m.reactions.cache.map((r) => ({ emoji: r.emoji.toString(), count: r.count })), reply_to: m.reference?.messageId || null, pinned: m.pinned }; }
-    case "search_messages": { const channel = await resolveTextChannel(guild, args.channel_id); const limit = Math.min(args.limit || 100, 100); const messages = await channel.messages.fetch({ limit }); const lower = args.query.toLowerCase(); const matches = [...messages.values()].filter((m) => m.content.toLowerCase().includes(lower)); return { channel_id: channel.id, channel_name: channel.name, query: args.query, total_scanned: messages.size, matches_found: matches.length, messages: matches.reverse().map((m) => ({ id: m.id, author: m.author.username, author_id: m.author.id, content: m.content, timestamp: m.createdAt })) }; }
+    case "search_messages": { const channel = await resolveTextChannel(guild, args.channel_id); const limit = Math.min(args.limit || 100, 100); const messages = await channel.messages.fetch({ limit }); const lower = args.query.toLowerCase(); const matches = [...messages.values()].filter((m) => m.content.toLowerCase().includes(lower)); return { channel_id: channel.id, channel_name: channel.name, query: args.query, total_scanned: messages.size, matches_found: matches.length, messages: matches.reverse().map((m) => ({ id: m.id, author: m.author.username, author_id: m.author.id, content: m.content, timestamp: m.createdAt, attachments: mapAttachments(m), embeds: mapEmbedsShort(m) })) }; }
     case "send_message": { const channel = await resolveTextChannel(guild, args.channel_id); const payload = buildMessagePayload(args); const msg = await channel.send(payload); return { message_id: msg.id, channel_id: channel.id, channel_name: channel.name }; }
     case "send_dm_by_username": { const member = await resolveMember(guild, args.username); const dmChannel = await member.user.createDM(); const payload = buildMessagePayload(args); const msg = await dmChannel.send(payload); return { message_id: msg.id, user_id: member.id, username: member.user.username, status: "sent" }; }
     case "reply_message": { const channel = await resolveTextChannel(guild, args.channel_id); const targetMsg = await channel.messages.fetch(args.message_id); const payload = { ...buildMessagePayload(args), allowedMentions: { repliedUser: args.ping !== false } }; const msg = await targetMsg.reply(payload); return { message_id: msg.id, channel_id: channel.id, replied_to: args.message_id }; }
     case "edit_message": { const channel = await resolveTextChannel(guild, args.channel_id); const msg = await channel.messages.fetch(args.message_id); const payload = buildMessagePayload(args); await msg.edit(payload); return { edited_message_id: args.message_id, channel_id: channel.id }; }
     case "pin_message": { const channel = await resolveTextChannel(guild, args.channel_id); const msg = await channel.messages.fetch(args.message_id); await msg.pin(); return { pinned_message_id: args.message_id, channel_id: channel.id, channel_name: channel.name }; }
     case "unpin_message": { const channel = await resolveTextChannel(guild, args.channel_id); const msg = await channel.messages.fetch(args.message_id); await msg.unpin(); return { unpinned_message_id: args.message_id, channel_id: channel.id, channel_name: channel.name }; }
-    case "get_pinned_messages": { const channel = await resolveTextChannel(guild, args.channel_id); const pinned = await channel.messages.fetchPinned(); return { channel_id: channel.id, channel_name: channel.name, count: pinned.size, messages: [...pinned.values()].map((m) => ({ id: m.id, author: m.author.username, content: m.content.slice(0, 200), timestamp: m.createdAt })) }; }
+    case "get_pinned_messages": { const channel = await resolveTextChannel(guild, args.channel_id); const pinned = await channel.messages.fetchPinned(); return { channel_id: channel.id, channel_name: channel.name, count: pinned.size, messages: [...pinned.values()].map((m) => ({ id: m.id, author: m.author.username, content: m.content, timestamp: m.createdAt, attachments: mapAttachments(m), embeds: mapEmbeds(m) })) }; }
     case "mass_send_message": { const results = await Promise.allSettled(args.messages.map(async (m) => { const channel = await resolveTextChannel(guild, m.channel_id); const payload = buildMessagePayload(m); const msg = await channel.send(payload); return { message_id: msg.id, channel_id: channel.id }; })); return results.map((r, i) => r.status === "fulfilled" ? { channel_id: args.messages[i].channel_id, message_id: r.value.message_id, status: "sent" } : { channel_id: args.messages[i].channel_id, status: "failed", error: r.reason?.message }); }
     case "delete_message": { const channel = await resolveTextChannel(guild, args.channel_id); const msg = await channel.messages.fetch(args.message_id); await msg.delete(); return { deleted_message_id: args.message_id, channel_id: channel.id }; }
     case "bulk_delete_messages": { const channel = await resolveTextChannel(guild, args.channel_id); if (args.message_ids.length > 100) throw new Error("bulk_delete_messages supports at most 100 messages at once"); const deleted = await channel.bulkDelete(args.message_ids, true); return { channel_id: channel.id, channel_name: channel.name, deleted_count: deleted.size, requested: args.message_ids.length }; }
@@ -325,7 +366,7 @@ async function handleTool(name, args) {
     case "remove_reaction": { const channel = await resolveTextChannel(guild, args.channel_id); const msg = await channel.messages.fetch(args.message_id); await msg.reactions.resolve(args.emoji)?.users.remove(discord.user.id); return { message_id: args.message_id, emoji: args.emoji, status: "removed" }; }
     case "get_reactions": { const channel = await resolveTextChannel(guild, args.channel_id); const msg = await channel.messages.fetch(args.message_id); const reaction = msg.reactions.cache.find((r) => r.emoji.toString() === args.emoji || r.emoji.name === args.emoji); if (!reaction) return { emoji: args.emoji, users: [], count: 0 }; const users = await reaction.users.fetch({ limit: args.limit || 100 }); return { emoji: args.emoji, count: reaction.count, users: [...users.values()].map((u) => ({ id: u.id, username: u.username, bot: u.bot })) }; }
     case "crosspost_message": { const channel = await resolveTextChannel(guild, args.channel_id); if (channel.type !== ChannelType.GuildAnnouncement) throw new Error("Channel is not an announcement channel"); const msg = await channel.messages.fetch(args.message_id); await msg.crosspost(); return { crossposted: args.message_id, channel_id: channel.id }; }
-    case "list_roles": { await guild.roles.fetch(); return { guild_id: guild.id, guild_name: guild.name, roles: guild.roles.cache.filter((r) => r.name !== "@everyone").sort((a, b) => b.position - a.position).map((r) => ({ id: r.id, name: r.name, color: r.hexColor, hoist: r.hoist, mentionable: r.mentionable, position: r.position, member_count: r.members.size })) }; }
+    case "list_roles": { await guild.roles.fetch(); return { guild_id: guild.id, guild_name: guild.name, roles: guild.roles.cache.filter((r) => r.name !== "@everyone").sort((a, b) => b.position - a.position).map((r) => ({ id: r.id, name: r.name, color: r.hexColor, hoist: r.hoist, mentionable: r.mentionable, position: r.position, member_count: r.members.size, permissions: r.permissions.toArray() })) }; }
     case "create_role": { const opts = { name: args.name, color: args.color || null, hoist: args.hoist || false, mentionable: args.mentionable || false }; if (args.permissions) opts.permissions = args.permissions.map((p) => PermissionsBitField.Flags[p]).filter(Boolean); const role = await guild.roles.create(opts); return { id: role.id, name: role.name, color: role.hexColor, hoist: role.hoist, mentionable: role.mentionable }; }
     case "edit_role": { const role = resolveRole(guild, args.role_id); const edits = {}; if (args.name !== undefined) edits.name = args.name; if (args.color !== undefined) edits.color = args.color; if (args.hoist !== undefined) edits.hoist = args.hoist; if (args.mentionable !== undefined) edits.mentionable = args.mentionable; if (args.permissions) edits.permissions = args.permissions.map((p) => PermissionsBitField.Flags[p]).filter(Boolean); await role.edit(edits); return { id: role.id, name: role.name, edited: Object.keys(edits) }; }
     case "delete_role": { const role = guild.roles.cache.get(args.role_id); if (!role) throw new Error(`Role ${args.role_id} not found`); const roleName = role.name; await role.delete(); return { deleted: args.role_id, name: roleName }; }
@@ -333,7 +374,7 @@ async function handleTool(name, args) {
     case "mass_delete_role": { const results = await Promise.allSettled(args.role_ids.map(async (id) => { const role = guild.roles.cache.get(id); if (!role) throw new Error(`Role ${id} not found`); const n = role.name; await role.delete(); return { id, name: n }; })); return results.map((r, i) => r.status === "fulfilled" ? { id: args.role_ids[i], name: r.value.name, status: "deleted" } : { id: args.role_ids[i], status: "failed", error: r.reason?.message }); }
     case "assign_role": { const member = await resolveMember(guild, args.user_id); const role = resolveRole(guild, args.role_id); await member.roles.add(role); return { user_id: member.id, username: member.user.username, role_id: role.id, role_name: role.name, status: "assigned" }; }
     case "remove_role": { const member = await resolveMember(guild, args.user_id); const role = resolveRole(guild, args.role_id); await member.roles.remove(role); return { user_id: member.id, username: member.user.username, role_id: role.id, role_name: role.name, status: "removed" }; }
-    case "list_members": { const limit = Math.min(args.limit || 100, 1000); await guild.members.fetch({ limit }); let members = [...guild.members.cache.values()]; if (args.role_id) { const role = resolveRole(guild, args.role_id); members = members.filter((m) => m.roles.cache.has(role.id)); } return { guild_id: guild.id, total: members.length, members: members.slice(0, limit).map((m) => ({ id: m.id, username: m.user.username, display_name: m.displayName, is_bot: m.user.bot, joined_at: m.joinedAt, roles: m.roles.cache.filter((r) => r.name !== "@everyone").map((r) => ({ id: r.id, name: r.name })) })) }; }
+    case "list_members": { const limit = Math.min(args.limit || 100, 1000); await guild.members.fetch({ limit }); let members = [...guild.members.cache.values()]; if (args.role_id) { const role = resolveRole(guild, args.role_id); members = members.filter((m) => m.roles.cache.has(role.id)); } return { guild_id: guild.id, total: members.length, members: members.slice(0, limit).map((m) => ({ id: m.id, username: m.user.username, display_name: m.displayName, is_bot: m.user.bot, joined_at: m.joinedAt, avatar_url: m.displayAvatarURL({ size: 256 }), roles: m.roles.cache.filter((r) => r.name !== "@everyone").map((r) => ({ id: r.id, name: r.name })) })) }; }
     case "get_member": { const member = await resolveMember(guild, args.user_id); return { id: member.id, username: member.user.username, display_name: member.displayName, nickname: member.nickname, avatar_url: member.displayAvatarURL({ size: 512 }), is_bot: member.user.bot, joined_at: member.joinedAt, account_created_at: member.user.createdAt, boosting_since: member.premiumSince, communication_disabled_until: member.communicationDisabledUntilTimestamp ? new Date(member.communicationDisabledUntilTimestamp) : null, roles: member.roles.cache.filter((r) => r.name !== "@everyone").sort((a, b) => b.position - a.position).map((r) => ({ id: r.id, name: r.name, color: r.hexColor })), permissions: member.permissions.toArray(), presence: member.presence ? { status: member.presence.status, activities: member.presence.activities.map((a) => ({ name: a.name, type: a.type, state: a.state })) } : null }; }
     case "set_nickname": { const member = await resolveMember(guild, args.user_id); const oldNick = member.nickname; await member.setNickname(args.nickname || null); return { user_id: member.id, username: member.user.username, old_nickname: oldNick, new_nickname: args.nickname || null }; }
     case "create_invite": { const channel = resolveAnyChannel(guild, args.channel_id); const invite = await channel.createInvite({ maxAge: args.max_age ?? 86400, maxUses: args.max_uses ?? 0, temporary: args.temporary ?? false, unique: args.unique ?? false }); return { code: invite.code, url: invite.url, channel_id: channel.id, max_age: invite.maxAge, max_uses: invite.maxUses, temporary: invite.temporary }; }
@@ -372,6 +413,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
   try {
+    if (args.requests && BATCHABLE_TOOLS.has(name)) {
+      const results = await Promise.allSettled(args.requests.map(async (req) => {
+        const mergedArgs = { ...args, ...req };
+        delete mergedArgs.requests;
+        return await handleTool(name, mergedArgs);
+      }));
+      const batchResult = results.map((r, i) =>
+        r.status === "fulfilled"
+          ? { ...r.value, status: "success" }
+          : { ...args.requests[i], status: "failed", error: r.reason?.message }
+      );
+      return { content: [{ type: "text", text: JSON.stringify(batchResult, null, 2) }] };
+    }
     const result = await handleTool(name, args);
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   } catch (err) {
