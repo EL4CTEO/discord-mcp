@@ -57,7 +57,7 @@ const discordReady = new Promise((resolve, reject) => {
 });
 
 const server = new Server(
-  { name: "discord-mcp", version: "4.0.0" },
+  { name: "discord-mcp", version: "5.0.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -287,6 +287,10 @@ const tools = [
   { name: "send_poll", description: "Send a message with a poll to a channel.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" }, question: { type: "string" }, answers: { type: "array", items: { type: "string" }, description: "Array of answer text strings (max 10)" }, duration_hours: { type: "number", description: "Poll duration in hours (default: 24, max: 168)" }, allow_multiselect: { type: "boolean", description: "Allow multiple answers (default: false)" } }, required: ["channel_id", "question", "answers"] } },
   { name: "fetch_message_link", description: "Generate a Discord jump-to-message URL.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" }, message_id: { type: "string" } }, required: ["channel_id", "message_id"] } },
   { name: "delete_scheduled_event", description: "Delete a scheduled event by ID", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, event_id: { type: "string" } }, required: ["event_id"] } },
+
+  { name: "get_voice_states", description: "See which users are currently in voice channels. Shows channel, mute/deaf status, streaming, video. Optionally filter by channel.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Optional: filter to a specific voice channel ID or name" } } } },
+  { name: "modify_member", description: "Modify multiple member properties in a single call: nickname, roles (add/remove), timeout. All-in-one member management.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, user_id: { type: "string", description: "User ID or username" }, nickname: { type: "string", description: "New nickname (omit to keep current)" }, add_roles: { type: "array", items: { type: "string" }, description: "Role IDs or names to add" }, remove_roles: { type: "array", items: { type: "string" }, description: "Role IDs or names to remove" }, timeout_minutes: { type: "number", description: "Timeout in minutes (0 to remove)" }, reason: { type: "string" } }, required: ["user_id"] } },
+  { name: "get_channel_info", description: "Get detailed info about a single channel: type, topic, parent, NSFW, slowmode, bitrate, voice members, thread properties, etc.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Channel ID or name" } }, required: ["channel_id"] } },
 ];
 
 const BATCHABLE_TOOLS = new Set([
@@ -310,6 +314,8 @@ const BATCHABLE_TOOLS = new Set([
   "download_attachment", "get_avatar",
   "reply_dm", "edit_dm", "delete_dm",
   "send_typing", "send_poll", "fetch_message_link", "edit_forum_tags",
+  "send_dm_by_username", "create_scheduled_event", "create_announcement_channel",
+  "set_channel_permissions", "remove_timeout", "modify_member", "get_channel_info",
 ]);
 
 for (const tool of tools) {
@@ -442,6 +448,9 @@ async function handleTool(name, args) {
     case "send_typing": { const ch = await resolveTextChannel(guild, args.channel_id); await ch.sendTyping(); return { channel_id: ch.id, status: "typing" }; }
     case "send_poll": { const ch = await resolveTextChannel(guild, args.channel_id); const pollData = { question: { text: args.question }, answers: args.answers.slice(0, 10).map(a => ({ text: a })), duration: args.duration_hours || 24, allowMultiselect: args.allow_multiselect || false }; const msg = await ch.send({ poll: pollData }); return { message_id: msg.id, channel_id: ch.id, question: args.question, answers_count: args.answers.length }; }
     case "fetch_message_link": { const gid = guild.id; return { url: "https://discord.com/channels/" + gid + "/" + args.channel_id + "/" + args.message_id, guild_id: gid, channel_id: args.channel_id, message_id: args.message_id }; }
+    case "get_voice_states": { await guild.members.fetch(); const states = [...guild.voiceStates.cache.values()]; let result = states; if (args.channel_id) { let targetCh = guild.channels.cache.get(args.channel_id); if (!targetCh) { const lower = args.channel_id.toLowerCase(); targetCh = guild.channels.cache.find(c => c.name && c.name.toLowerCase() === lower); } if (targetCh) result = states.filter(s => s.channelId === targetCh.id); } return { guild_id: guild.id, total_in_voice: states.length, showing: result.length, voice_states: result.map(s => ({ user_id: s.id, username: guild.members.cache.get(s.id)?.user.username || "unknown", channel_id: s.channelId, channel_name: guild.channels.cache.get(s.channelId)?.name || "unknown", self_mute: s.selfMute, self_deaf: s.selfDeaf, server_mute: s.serverMute, server_deaf: s.serverDeaf, streaming: s.streaming, video: s.selfVideo, suppress: s.suppress })) }; }
+    case "modify_member": { const member = await resolveMember(guild, args.user_id); const changes = []; if (args.nickname !== undefined) { await member.setNickname(args.nickname || null, args.reason || undefined); changes.push("nickname: " + (args.nickname || "cleared")); } if (args.add_roles?.length) { const roles = args.add_roles.map(r => resolveRole(guild, r)); await member.roles.add(roles, args.reason || undefined); changes.push("added " + roles.length + " role(s)"); } if (args.remove_roles?.length) { const roles = args.remove_roles.map(r => resolveRole(guild, r)); await member.roles.remove(roles, args.reason || undefined); changes.push("removed " + roles.length + " role(s)"); } if (args.timeout_minutes !== undefined) { if (args.timeout_minutes === 0) { await member.timeout(null, args.reason || undefined); changes.push("timeout removed"); } else { await member.timeout(args.timeout_minutes * 60 * 1000, args.reason || undefined); changes.push("timeout " + args.timeout_minutes + "min"); } } return { user_id: member.id, username: member.user.username, changes }; }
+    case "get_channel_info": { const ch = resolveAnyChannel(guild, args.channel_id); const info = { id: ch.id, name: ch.name, type: ch.type === ChannelType.GuildText ? "text" : ch.type === ChannelType.GuildVoice ? "voice" : ch.type === ChannelType.GuildCategory ? "category" : ch.type === ChannelType.GuildForum ? "forum" : ch.type === ChannelType.GuildAnnouncement ? "announcement" : ch.type === ChannelType.GuildStageVoice ? "stage" : ch.type === ChannelType.AnnouncementThread ? "announcement_thread" : ch.type === ChannelType.PublicThread ? "public_thread" : ch.type === ChannelType.PrivateThread ? "private_thread" : String(ch.type), created_at: ch.createdAt, nsfw: ch.nsfw || false, parent_id: ch.parentId || null, parent_name: ch.parent?.name || null, position: ch.position || 0 }; if (ch.isTextBased()) { info.topic = ch.topic || null; info.slowmode = ch.rateLimitPerUser || 0; } if (ch.type === ChannelType.GuildVoice || ch.type === ChannelType.GuildStageVoice) { info.bitrate = ch.bitrate; info.user_limit = ch.userLimit; info.members_in_channel = [...ch.members.values()].map(m => ({ id: m.id, username: m.user.username })); } if (ch.isThread()) { info.archived = ch.archived; info.locked = ch.locked; info.member_count = ch.memberCount; info.message_count = ch.messageCount; info.auto_archive_duration = ch.autoArchiveDuration; info.owner_id = ch.ownerId; } return info; }
     default: throw new Error(`Unknown tool: ${name}`);
   }
 }
