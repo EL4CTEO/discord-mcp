@@ -1,12 +1,12 @@
 # Discord MCP
 
-Extensive Discord MCP server for Claude — **99 tools** with hybrid single/batch mode for autonomous task workflows. Manage channels, messages, roles, threads, members, webhooks, emojis, stickers, automod, invites, scheduled events, audit logs, DMs, polls, forum tags, and more.
+Extensive Discord MCP server for Claude — **102 tools** with True Hybrid Mode for autonomous task workflows. Manage channels, messages, roles, threads, members, webhooks, emojis, stickers, automod, invites, scheduled events, audit logs, DMs, polls, forum tags, voice states, and more.
 
-**v4.0.0** — Fully hybrid: every action tool supports both single and batch (`requests` array) mode. 24 new tools: AutoMod, Stickers, DM operations, Polls, Advanced Analysis, Guild Management, Forum Tags.
+**v5.0.0** — True Hybrid Mode: 72 of 102 tools support batch mode via `requests` array. 3 new tools: Voice States, Modify Member, Channel Info. Extended batch support to DM-by-username, scheduled events, permissions, and more.
 
-## Hybrid Single/Batch Mode
+## True Hybrid Mode
 
-Every action tool supports two call modes with one unified interface:
+Every action tool supports both single and batch calls with one unified interface:
 
 ```json
 // Single mode — pass params directly
@@ -26,6 +26,8 @@ Every action tool supports two call modes with one unified interface:
 
 Batch mode returns an array of results, each with `status: "success"` or `status: "failed"` + `error`. Top-level params like `guild_id` are inherited by each batch item.
 
+**72 batchable tools** — all action tools (send, create, edit, delete, assign, kick, ban, timeout, react, pin, etc.) plus read tools that benefit from batch (get_message, get_member, search_messages, get_channel_info, etc.).
+
 ---
 
 ## Setup
@@ -42,7 +44,7 @@ Batch mode returns an array of results, each with `status: "success"` or `status
 https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=8544854581706231&integration_type=0&scope=bot
 ```
 
-**Recommended:** `8544854581706231` (Administrator) — covers all 99 tools.
+**Recommended:** `8544854581706231` (Administrator) — covers all 102 tools.
 
 ### 2. Install globally
 
@@ -101,7 +103,7 @@ Or in `.mcp.json`:
 
 ---
 
-## Tools (99 total)
+## Tools (102 total)
 
 **✓** = supports batch mode via `requests` array
 
@@ -114,21 +116,22 @@ Or in `.mcp.json`:
 | `list_guilds` | | List all servers the bot is in. |
 | `guild_info` | | Detailed guild metadata. |
 
-### Channels (12)
+### Channels (13)
 
 | Tool | ✓ | Description |
 |------|:-:|-------------|
 | `list_channels` | | List all channels with IDs, names, types, topic, NSFW. |
+| `get_channel_info` | ✓ | Detailed info about a single channel (type, topic, parent, NSFW, slowmode, bitrate, voice members, thread props). |
 | `create_channel` | ✓ | Create a text channel. |
 | `create_category` | ✓ | Create a category. |
 | `create_voice_channel` | ✓ | Create a voice channel. |
-| `create_announcement_channel` | | Create an announcement channel. |
+| `create_announcement_channel` | ✓ | Create an announcement channel. |
 | `edit_channel` | ✓ | Edit any channel property. |
 | `rename_channel` | ✓ | Rename a channel or category. |
 | `set_channel_topic` | ✓ | Set or clear a channel topic. |
 | `move_channel` | ✓ | Move channel to different category. |
 | `clone_channel` | ✓ | Clone channel with all settings. |
-| `set_channel_permissions` | | Set permission overwrites. |
+| `set_channel_permissions` | ✓ | Set permission overwrites. |
 | `delete` | ✓ | Delete a channel or category. |
 
 ### Messages (15)
@@ -145,7 +148,7 @@ Or in `.mcp.json`:
 | `unpin_message` | ✓ | Unpin a message. |
 | `get_pinned_messages` | ✓ | Get all pinned messages with full content. |
 | `delete_message` | ✓ | Delete a message. |
-| `bulk_delete_messages` | | Delete up to 100 messages (Discord native API). |
+| `bulk_delete_messages` | ✓ | Delete up to 100 messages (Discord native API). |
 | `add_reaction` | ✓ | Add emoji reaction. |
 | `remove_reaction` | ✓ | Remove bot's reaction. |
 | `get_reactions` | ✓ | Get users who reacted. |
@@ -156,7 +159,7 @@ Or in `.mcp.json`:
 | Tool | ✓ | Description |
 |------|:-:|-------------|
 | `send_dm` | ✓ | Send DM by user ID. |
-| `send_dm_by_username` | | Send DM by username. |
+| `send_dm_by_username` | ✓ | Send DM by username. |
 | `get_dm_history` | ✓ | Fetch DM history with full attachments/embeds. |
 | `reply_dm` | ✓ | Reply to a specific DM message. |
 | `edit_dm` | ✓ | Edit a bot DM message. |
@@ -173,13 +176,20 @@ Or in `.mcp.json`:
 | `assign_role` | ✓ | Assign role to user. |
 | `remove_role` | ✓ | Remove role from user. |
 
-### Members (3)
+### Members (5)
 
 | Tool | ✓ | Description |
 |------|:-:|-------------|
 | `list_members` | | List members with avatar URLs. |
 | `get_member` | ✓ | Detailed member info. |
 | `set_nickname` | ✓ | Set/clear nickname. |
+| `modify_member` | ✓ | All-in-one: nickname + add/remove roles + timeout in a single call. |
+
+### Voice (1)
+
+| Tool | ✓ | Description |
+|------|:-:|-------------|
+| `get_voice_states` | | See who's in voice channels (mute/deaf/streaming/video). Filter by channel. |
 
 ### Invites (3)
 
@@ -206,7 +216,7 @@ Or in `.mcp.json`:
 | `create_emoji` | ✓ | Create emoji from URL. |
 | `delete_emoji` | ✓ | Delete emoji. |
 
-### Stickers (3) ✨ NEW
+### Stickers (3)
 
 | Tool | ✓ | Description |
 |------|:-:|-------------|
@@ -214,7 +224,7 @@ Or in `.mcp.json`:
 | `create_sticker` | ✓ | Create sticker from URL. |
 | `delete_sticker` | ✓ | Delete sticker. |
 
-### AutoMod (4) ✨ NEW
+### AutoMod (4)
 
 | Tool | ✓ | Description |
 |------|:-:|-------------|
@@ -234,7 +244,7 @@ Or in `.mcp.json`:
 | `archive_thread` | ✓ | Archive/unarchive thread. |
 | `create_forum_post` | | Create forum post. |
 
-### Forum Tags (2) ✨ NEW
+### Forum Tags (2)
 
 | Tool | ✓ | Description |
 |------|:-:|-------------|
@@ -250,7 +260,7 @@ Or in `.mcp.json`:
 | `unban_user` | ✓ | Unban a user. |
 | `list_bans` | | List banned users. |
 | `time_out_user` | ✓ | Timeout a user. |
-| `remove_timeout` | | Remove timeout. |
+| `remove_timeout` | ✓ | Remove timeout. |
 
 ### Analysis (7)
 
@@ -259,12 +269,12 @@ Or in `.mcp.json`:
 | `server_analysis` | Full server overview. |
 | `channel_analysis` | Channel activity stats. |
 | `user_analysis` | User activity stats. |
-| `message_stats` | ✨ Messages/day, peak hours, media ratio. |
-| `role_analysis` | ✨ Empty roles, members without roles, role overlap. |
-| `emoji_usage` | ✨ Emoji frequency analysis (custom + unicode). |
-| `inactive_members` | ✨ Find members inactive for N days. |
+| `message_stats` | Messages/day, peak hours, media ratio. |
+| `role_analysis` | Empty roles, members without roles, role overlap. |
+| `emoji_usage` | Emoji frequency analysis (custom + unicode). |
+| `inactive_members` | Find members inactive for N days. |
 
-### Guild Management (3) ✨ NEW
+### Guild Management (3)
 
 | Tool | Description |
 |------|-------------|
@@ -272,14 +282,14 @@ Or in `.mcp.json`:
 | `prune_members` | Prune inactive members (dry-run or real). |
 | `get_vanity_url` | Get vanity URL and usage count. |
 
-### Media & Attachments (2) ✨ NEW
+### Media & Attachments (2)
 
 | Tool | ✓ | Description |
 |------|:-:|-------------|
 | `download_attachment` | ✓ | Full metadata + URLs for all attachments on a message. |
 | `get_avatar` | ✓ | User avatar/banner or guild icon/banner at any resolution. |
 
-### Utilities (3) ✨ NEW
+### Utilities (3)
 
 | Tool | ✓ | Description |
 |------|:-:|-------------|
@@ -305,7 +315,7 @@ Or in `.mcp.json`:
 | Tool | ✓ | Description |
 |------|:-:|-------------|
 | `list_scheduled_events` | | List all events. |
-| `create_scheduled_event` | | Create event. |
+| `create_scheduled_event` | ✓ | Create event. |
 | `delete_scheduled_event` | ✓ | Delete event. |
 
 ---
@@ -337,19 +347,22 @@ Or in `.mcp.json`:
 - **Use `list_channels`** to find a channel ID, not `server_analysis`
 - **Use `bulk_delete_messages`** for fast deletion of recent messages (<14 days)
 - **Use `edit_channel`** instead of separate rename/topic/move calls
+- **Use `modify_member`** instead of separate nickname + role + timeout calls
 - **If you have a channel ID**, call `send_message` directly — no other calls needed first
 - **Use `send_typing`** before long operations for better UX
+- **Use `get_channel_info`** for quick channel details instead of `list_channels` + filtering
 
 ---
 
 ## Required Bot Permissions
 
-**Recommended:** `8544854581706231` (Administrator) — covers all 99 tools.
+**Recommended:** `8544854581706231` (Administrator) — covers all 102 tools.
 
-**Minimal:** `564386553359607` — see [permission table in v3.2.0 docs](https://github.com/EL4CTEO/discord-mcp/blob/v3.2.0/README.md) for per-tool breakdown. v4.0.0 additionally requires:
+**Minimal:** `564386553359607` — see [permission table in v3.2.0 docs](https://github.com/EL4CTEO/discord-mcp/blob/v3.2.0/README.md) for per-tool breakdown. v5.0.0 additionally requires:
 - `Manage Guild` for `edit_guild`, `prune_members`, `get_vanity_url`
 - `Manage Emojis & Stickers` for `create_sticker`, `delete_sticker`
 - `Manage Guild` (AutoMod) for `create_automod_rule`, `edit_automod_rule`, `delete_automod_rule`
+- `Connect` for `get_voice_states` (to see voice channel members)
 
 **Privileged Intents:** Server Members, Message Content, Presence
 
@@ -357,6 +370,6 @@ Or in `.mcp.json`:
 
 ## Gateway Intents
 
-v4.0.0 uses 14 gateway intents:
+v5.0.0 uses 14 gateway intents:
 
 `Guilds`, `GuildMembers`, `GuildMessages`, `MessageContent`, `GuildModeration`, `GuildPresences`, `GuildMessageReactions`, `DirectMessages`, `DirectMessageReactions`, `GuildInvites`, `GuildWebhooks`, `GuildScheduledEvents`, `GuildEmojisAndStickers`, `GuildIntegrations`
