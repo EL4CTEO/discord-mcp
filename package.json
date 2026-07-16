@@ -1,7 +1,7 @@
 {
   "name": "discord-mcp",
-  "version": "5.0.0",
-  "description": "Extensive Discord MCP server for Claude — 102 tools with True Hybrid Mode",
+  "version": "6.0.0",
+  "description": "Compact Discord MCP server for Claude — full Discord control in 14 consolidated tools",
   "main": "index.js",
   "bin": {
     "discord-mcp": "index.js"

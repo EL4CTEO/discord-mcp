@@ -2,17 +2,19 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
-import { Client, GatewayIntentBits, ChannelType, PermissionsBitField, AuditLogEvent } from "discord.js";
+  Client, GatewayIntentBits, ChannelType, PermissionsBitField, AuditLogEvent, ActivityType,
+  AutoModerationRuleTriggerType, AutoModerationRuleEventType, AutoModerationActionType,
+  AutoModerationRuleKeywordPresetType,
+} from "discord.js";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = join(__dirname, ".discord-mcp-config.json");
+const MAX_RESPONSE_CHARS = 25000;
 
 function loadConfig() {
   if (existsSync(CONFIG_PATH)) {
@@ -38,15 +40,10 @@ const discord = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildModeration,
-    GatewayIntentBits.GuildPresences,
     GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.DirectMessages,
-    GatewayIntentBits.DirectMessageReactions,
     GatewayIntentBits.GuildInvites,
     GatewayIntentBits.GuildWebhooks,
-    GatewayIntentBits.GuildScheduledEvents,
-    GatewayIntentBits.GuildEmojisAndStickers,
-    GatewayIntentBits.GuildIntegrations,
   ],
 });
 
@@ -55,103 +52,81 @@ const discordReady = new Promise((resolve, reject) => {
   discord.once("error", reject);
   discord.login(BOT_TOKEN).catch(reject);
 });
+discordReady.catch(() => {}); // surfaced per-call when awaited; prevents an unhandled-rejection crash at startup
 
-const server = new Server(
-  { name: "discord-mcp", version: "5.0.0" },
-  { capabilities: { tools: {} } }
-);
+// ---------- resolvers ----------
 
-async function requireDiscord() {
-  await discordReady;
-}
+const ID_RE = /^\d{17,20}$/;
 
-function resolveGuildId(args) {
-  if (args.guild_id) return args.guild_id;
-  const config = loadConfig();
-  if (config.default_guild_id) return config.default_guild_id;
-  throw new Error("No guild_id provided and no default guild set. Use set_guild first.");
-}
-
-function getGuild(guildId) {
-  const guild = discord.guilds.cache.get(guildId);
-  if (!guild) throw new Error(`Guild ${guildId} not found or bot is not in this server`);
+function resolveGuild(args) {
+  const id = args.guild_id || loadConfig().default_guild_id;
+  if (!id) throw new Error("No guild_id provided and no default guild set. Run guild with action=set_default first.");
+  const guild = discord.guilds.cache.get(id);
+  if (!guild) throw new Error(`Guild ${id} not found or bot is not in this server. Run guild with action=list to see available servers.`);
   return guild;
 }
 
-async function resolveMember(guild, userIdOrName) {
-  if (/^\d{17,20}$/.test(userIdOrName)) {
-    return await guild.members.fetch(userIdOrName);
+async function resolveChannel(guild, ref, { textOnly = false } = {}) {
+  if (!ref) throw new Error("Missing 'channel' parameter (channel ID, channel name, or thread ID).");
+  let channel = guild.channels.cache.get(ref);
+  if (!channel && ID_RE.test(ref)) {
+    try { channel = await discord.channels.fetch(ref); } catch {}
   }
+  if (!channel) {
+    const lower = ref.toLowerCase();
+    channel = guild.channels.cache.find((c) => c.name && c.name.toLowerCase() === lower);
+  }
+  if (!channel) {
+    const active = await guild.channels.fetchActiveThreads();
+    channel = active.threads.get(ref);
+    if (!channel) {
+      const lower = ref.toLowerCase();
+      channel = active.threads.find((t) => t.name.toLowerCase() === lower);
+    }
+  }
+  if (!channel) throw new Error(`Channel or thread "${ref}" not found. Run channel with action=list to see all channels.`);
+  if (textOnly && !channel.isTextBased()) throw new Error(`Channel "${channel.name}" is not text-based.`);
+  return channel;
+}
+
+async function resolveMember(guild, ref) {
+  if (!ref) throw new Error("Missing 'user' parameter (user ID or username).");
+  if (ID_RE.test(ref)) return await guild.members.fetch(ref);
   await guild.members.fetch();
-  const lower = userIdOrName.toLowerCase();
+  const lower = ref.toLowerCase();
   const member = guild.members.cache.find(
     (m) =>
       m.user.username.toLowerCase() === lower ||
       m.displayName.toLowerCase() === lower ||
       (m.user.globalName && m.user.globalName.toLowerCase() === lower)
   );
-  if (!member) throw new Error(`User "${userIdOrName}" not found in this server`);
+  if (!member) throw new Error(`User "${ref}" not found in this server.`);
   return member;
 }
 
-function resolveRole(guild, roleIdOrName) {
-  if (/^\d{17,20}$/.test(roleIdOrName)) {
-    const role = guild.roles.cache.get(roleIdOrName);
-    if (!role) throw new Error(`Role ${roleIdOrName} not found`);
+function resolveRole(guild, ref) {
+  if (!ref) throw new Error("Missing 'role' parameter (role ID or name).");
+  if (ID_RE.test(ref)) {
+    const role = guild.roles.cache.get(ref);
+    if (!role) throw new Error(`Role ${ref} not found.`);
     return role;
   }
-  const lower = roleIdOrName.toLowerCase();
+  const lower = ref.toLowerCase();
   const role = guild.roles.cache.find((r) => r.name.toLowerCase() === lower);
-  if (!role) throw new Error(`Role "${roleIdOrName}" not found`);
+  if (!role) throw new Error(`Role "${ref}" not found. Run role with action=list to see all roles.`);
   return role;
 }
 
-async function resolveTextChannel(guild, channelIdOrName) {
-  let channel = guild.channels.cache.get(channelIdOrName);
-  if (!channel) {
-    try { channel = await discord.channels.fetch(channelIdOrName); } catch {}
-  }
-  if (!channel) {
-    const lower = channelIdOrName.toLowerCase();
-    channel = guild.channels.cache.find(
-      (c) => c.name && c.name.toLowerCase() === lower && c.isTextBased()
-    );
-  }
-  if (!channel) {
-    const activeThreads = await guild.channels.fetchActiveThreads();
-    channel = activeThreads.threads.get(channelIdOrName);
-    if (!channel) {
-      const lower = channelIdOrName.toLowerCase();
-      channel = activeThreads.threads.find((t) => t.name.toLowerCase() === lower);
+function permissionFlags(names) {
+  return (names || []).map((p) => {
+    if (PermissionsBitField.Flags[p] === undefined) {
+      throw new Error(`Unknown permission "${p}". Use discord.js flag names like SendMessages, ViewChannel, ManageMessages, Administrator.`);
     }
-  }
-  if (!channel) throw new Error(`Channel/thread "${channelIdOrName}" not found`);
-  if (!channel.isTextBased()) throw new Error(`Channel "${channelIdOrName}" is not text-based`);
-  return channel;
+    return PermissionsBitField.Flags[p];
+  });
 }
 
-function resolveAnyChannel(guild, channelIdOrName) {
-  let channel = guild.channels.cache.get(channelIdOrName);
-  if (!channel) {
-    const lower = channelIdOrName.toLowerCase();
-    channel = guild.channels.cache.find((c) => c.name && c.name.toLowerCase() === lower);
-  }
-  if (!channel) throw new Error(`Channel "${channelIdOrName}" not found`);
-  return channel;
-}
-
-async function fetchThread(guild, threadId) {
-  const cached = guild.channels.cache.get(threadId);
-  if (cached && cached.isThread()) return cached;
-  try {
-    const fetched = await discord.channels.fetch(threadId);
-    if (fetched && fetched.isThread()) return fetched;
-  } catch {}
-  const activeThreads = await guild.channels.fetchActiveThreads();
-  const active = activeThreads.threads.get(threadId);
-  if (active) return active;
-  throw new Error(`Thread ${threadId} not found or bot cannot access it`);
-}
+// ---------- payload / formatting helpers ----------
 
 function buildMessagePayload(args) {
   const payload = {};
@@ -171,313 +146,1266 @@ function buildMessagePayload(args) {
     if (e.timestamp) built.timestamp = e.timestamp === true ? new Date().toISOString() : e.timestamp;
     payload.embeds = [built];
   }
-  if (!payload.content && !payload.embeds) throw new Error("Either content or embed is required");
+  if (!payload.content && !payload.embeds) throw new Error("Either 'content' or 'embed' is required.");
   return payload;
 }
 
-function mapAttachments(m) {
-  return [...m.attachments.values()].map(a => ({ name: a.name, url: a.url, size: a.size }));
-}
-
-function mapEmbeds(m) {
-  return m.embeds.map(e => ({ title: e.title, description: e.description?.slice(0, 300), url: e.url, image: e.image?.url, thumbnail: e.thumbnail?.url }));
-}
-
-function mapEmbedsShort(m) {
-  return m.embeds.map(e => ({ title: e.title, url: e.url, image: e.image?.url }));
-}
-
-const tools = [
-  { name: "set_guild", description: "Persist a default guild (server) ID to disk. Call this ONCE \u2014 it survives restarts. After setting, all other tools work without specifying guild_id.", inputSchema: { type: "object", properties: { guild_id: { type: "string" } }, required: ["guild_id"] } },
-  { name: "get_guild", description: "Get the persisted default guild ID. Call only when unsure if a default has already been set.", inputSchema: { type: "object", properties: {} } },
-  { name: "list_guilds", description: "List all Discord servers the bot is in. Use only when the guild ID is unknown.", inputSchema: { type: "object", properties: {} } },
-  { name: "guild_info", description: "Get detailed guild information: icon, banner, features, verification level, vanity URL, system channel, AFK settings, etc.", inputSchema: { type: "object", properties: { guild_id: { type: "string" } } } },
-  { name: "list_channels", description: "List all channels and categories in the guild with their IDs, names, and types. Use this to resolve a channel name to an ID before sending messages or reading messages. Do NOT use server_analysis or channel_analysis just to find a channel ID.", inputSchema: { type: "object", properties: { guild_id: { type: "string" } } } },
-  { name: "create_channel", description: "Create a single text channel in a guild", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, name: { type: "string" }, category_id: { type: "string" }, topic: { type: "string" }, nsfw: { type: "boolean" }, slowmode: { type: "number", description: "Slowmode in seconds (0-21600)" } }, required: ["name"] } },
-  { name: "create_category", description: "Create a single category in a guild", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, name: { type: "string" } }, required: ["name"] } },
-  { name: "create_voice_channel", description: "Create a single voice channel in a guild", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, name: { type: "string" }, category_id: { type: "string" }, user_limit: { type: "number" }, bitrate: { type: "number" } }, required: ["name"] } },
-  { name: "create_announcement_channel", description: "Create an announcement (news) channel in a guild", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, name: { type: "string" }, category_id: { type: "string" }, topic: { type: "string" } }, required: ["name"] } },
-  { name: "edit_channel", description: "Edit any channel property: name, topic, NSFW, slowmode, bitrate, user_limit, position, parent category. Accepts channel ID or name.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Channel ID or name" }, name: { type: "string" }, topic: { type: "string" }, nsfw: { type: "boolean" }, slowmode: { type: "number", description: "Slowmode in seconds (0=off, max 21600)" }, bitrate: { type: "number", description: "Bitrate for voice channels" }, user_limit: { type: "number", description: "User limit for voice channels (0=unlimited)" }, position: { type: "number" }, parent_id: { type: "string", description: "Category ID to move channel into (null to remove)" }, lock_permissions: { type: "boolean", description: "Sync permissions with parent category" } }, required: ["channel_id"] } },
-  { name: "rename_channel", description: "Rename an existing channel or category", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Channel ID or name" }, name: { type: "string", description: "New name" } }, required: ["channel_id", "name"] } },
-  { name: "set_channel_topic", description: "Set or update the topic of a text channel", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Channel ID or name" }, topic: { type: "string", description: "New topic (empty string to clear)" } }, required: ["channel_id", "topic"] } },
-  { name: "move_channel", description: "Move a channel into a different category (or remove it from any category)", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Channel ID to move" }, category_id: { type: "string", description: "Target category ID (omit to remove from category)" } }, required: ["channel_id"] } },
-  { name: "clone_channel", description: "Clone a channel with all its settings (permissions, topic, slowmode, etc.)", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Channel ID or name to clone" }, name: { type: "string", description: "New name (optional, defaults to original-clone)" } }, required: ["channel_id"] } },
-  { name: "set_channel_permissions", description: "Set permission overwrites for a role or user on a channel. Use Discord permission names like SEND_MESSAGES, VIEW_CHANNEL, etc.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" }, target_id: { type: "string", description: "Role ID or User ID" }, target_type: { type: "string", description: "'role' or 'member'", enum: ["role", "member"] }, allow: { type: "array", items: { type: "string" }, description: "Permission names to allow" }, deny: { type: "array", items: { type: "string" }, description: "Permission names to deny" } }, required: ["channel_id", "target_id", "target_type"] } },
-  { name: "delete", description: "Delete a single channel or category by ID", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" }, reason: { type: "string" } }, required: ["channel_id"] } },
-  { name: "get_messages", description: "Fetch recent messages from a channel or thread. Accepts channel_id as ID or name. Supports before_message_id and after_message_id for pagination.", inputSchema: { type: "object", properties: { guild_id: { type: "string", description: "Optional if default guild is set" }, channel_id: { type: "string", description: "Channel or thread ID (or name)" }, limit: { type: "number", description: "Number of messages to fetch (default: 20, max: 100)" }, before_message_id: { type: "string", description: "Fetch messages before this message ID" }, after_message_id: { type: "string", description: "Fetch messages after this message ID" } }, required: ["channel_id"] } },
-  { name: "get_message", description: "Fetch a single message by its ID from a channel or thread.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Channel or thread ID (or name)" }, message_id: { type: "string", description: "The message ID to fetch" } }, required: ["channel_id", "message_id"] } },
-  { name: "search_messages", description: "Search for messages containing a keyword in a channel. Fetches up to `limit` recent messages and filters by keyword (case-insensitive).", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Channel ID or name to search in" }, query: { type: "string", description: "Keyword or phrase to search for (case-insensitive)" }, limit: { type: "number", description: "How many recent messages to scan (default: 100, max: 100)" } }, required: ["channel_id", "query"] } },
-  { name: "send_message", description: "Send a message (with optional embed) to a channel or thread. Accepts channel_id as ID or name. If channel_id is already known, call directly \u2014 do NOT call list_guilds, set_guild, list_channels, or any other tool first.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Channel or thread ID (or name)" }, content: { type: "string", description: "Plain text content (optional if embed is provided)" }, embed: { type: "object", description: "Optional Discord embed object", properties: { title: { type: "string" }, description: { type: "string" }, color: { description: "Hex color string (e.g. '#ff0000') or integer" }, url: { type: "string" }, thumbnail: { type: "string", description: "Thumbnail image URL" }, image: { type: "string", description: "Main image URL" }, footer: { description: "Footer text string or { text, icon_url }" }, author: { description: "Author name string or { name, url, icon_url }" }, fields: { type: "array", items: { type: "object", properties: { name: { type: "string" }, value: { type: "string" }, inline: { type: "boolean" } }, required: ["name", "value"] } }, timestamp: { description: "Set to true for current time, or ISO string" } } } }, required: ["channel_id"] } },
-  { name: "send_dm", description: "Send a direct message (DM) to a user by their Discord snowflake ID.", inputSchema: { type: "object", properties: { user_id: { type: "string", description: "Discord snowflake ID of the user" }, content: { type: "string", description: "Message content" }, embed: { type: "object", description: "Optional embed (same structure as send_message embed)" } }, required: ["user_id"] } },
-  { name: "send_dm_by_username", description: "Send a DM to a user by username or display name (resolves to user ID automatically). The bot must share a server with the user.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, username: { type: "string", description: "Username or display name of the user" }, content: { type: "string", description: "Message content" }, embed: { type: "object", description: "Optional embed (same structure as send_message embed)" } }, required: ["username"] } },
-  { name: "get_dm_history", description: "Fetch recent DM messages between the bot and a user. Use to read DM conversation history.", inputSchema: { type: "object", properties: { user_id: { type: "string", description: "Discord snowflake ID of the user" }, limit: { type: "number", description: "Number of messages to fetch (default: 20, max: 100)" }, before_message_id: { type: "string", description: "Fetch messages before this ID (pagination)" } }, required: ["user_id"] } },
-  { name: "reply_message", description: "Reply to a specific message, pinging the original author.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Channel or thread ID (or name)" }, message_id: { type: "string" }, content: { type: "string" }, embed: { type: "object", description: "Optional embed" }, ping: { type: "boolean", description: "Whether to ping the original author (default: true)" } }, required: ["channel_id", "message_id"] } },
-  { name: "edit_message", description: "Edit a message previously sent by the bot", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Channel or thread ID (or name)" }, message_id: { type: "string" }, content: { type: "string" }, embed: { type: "object", description: "Optional embed" } }, required: ["channel_id", "message_id"] } },
-  { name: "pin_message", description: "Pin a message in a channel", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Channel ID or name" }, message_id: { type: "string" } }, required: ["channel_id", "message_id"] } },
-  { name: "unpin_message", description: "Unpin a message from a channel", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Channel ID or name" }, message_id: { type: "string" } }, required: ["channel_id", "message_id"] } },
-  { name: "get_pinned_messages", description: "Get all pinned messages in a channel", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Channel ID or name" } }, required: ["channel_id"] } },
-  { name: "delete_message", description: "Delete a specific message from a channel", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" }, message_id: { type: "string" } }, required: ["channel_id", "message_id"] } },
-  { name: "bulk_delete_messages", description: "Delete up to 100 messages at once using Discord's native bulk delete API (much faster than deleting one-by-one). Messages must be less than 14 days old.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Channel ID or name" }, message_ids: { type: "array", items: { type: "string" }, description: "Array of message IDs to delete (max 100)" } }, required: ["channel_id", "message_ids"] } },
-  { name: "add_reaction", description: "Add an emoji reaction to a message", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Channel or thread ID (or name)" }, message_id: { type: "string" }, emoji: { type: "string", description: "Unicode emoji (e.g. '\ud83d\udc4d') or custom emoji ID (e.g. '<:name:id>')" } }, required: ["channel_id", "message_id", "emoji"] } },
-  { name: "remove_reaction", description: "Remove the bot's reaction from a message", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" }, message_id: { type: "string" }, emoji: { type: "string", description: "Unicode emoji or custom emoji string" } }, required: ["channel_id", "message_id", "emoji"] } },
-  { name: "get_reactions", description: "Get users who reacted with a specific emoji on a message", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" }, message_id: { type: "string" }, emoji: { type: "string" }, limit: { type: "number", description: "Max users to fetch (default: 100)" } }, required: ["channel_id", "message_id", "emoji"] } },
-  { name: "crosspost_message", description: "Crosspost (publish) a message in an announcement channel to all following channels", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" }, message_id: { type: "string" } }, required: ["channel_id", "message_id"] } },
-  { name: "list_roles", description: "List all roles in the guild with their IDs, names, colors, and member counts.", inputSchema: { type: "object", properties: { guild_id: { type: "string" } } } },
-  { name: "create_role", description: "Create a single role in a guild", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, name: { type: "string" }, color: { type: "string" }, hoist: { type: "boolean" }, mentionable: { type: "boolean" }, permissions: { type: "array", items: { type: "string" }, description: "Permission names like SEND_MESSAGES, MANAGE_CHANNELS, etc." } }, required: ["name"] } },
-  { name: "edit_role", description: "Edit a role's properties: name, color, hoist, mentionable, permissions", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, role_id: { type: "string", description: "Role ID or name" }, name: { type: "string" }, color: { type: "string" }, hoist: { type: "boolean" }, mentionable: { type: "boolean" }, permissions: { type: "array", items: { type: "string" }, description: "Permission names to set" } }, required: ["role_id"] } },
-  { name: "delete_role", description: "Delete a single role from a guild", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, role_id: { type: "string" } }, required: ["role_id"] } },
-  { name: "assign_role", description: "Assign a role to a user. Accepts username or snowflake ID for both user and role.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, user_id: { type: "string", description: "User snowflake ID or username" }, role_id: { type: "string", description: "Role snowflake ID or role name" } }, required: ["user_id", "role_id"] } },
-  { name: "remove_role", description: "Remove a role from a user. Accepts username or snowflake ID for both user and role.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, user_id: { type: "string", description: "User snowflake ID or username" }, role_id: { type: "string", description: "Role snowflake ID or role name" } }, required: ["user_id", "role_id"] } },
-  { name: "list_members", description: "List members in the guild with their IDs, usernames, display names, and roles. Supports optional role filter and limit.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, role_id: { type: "string", description: "Filter to members that have this role (ID or name)" }, limit: { type: "number", description: "Max members to return (default: 100, max: 1000)" } } } },
-  { name: "get_member", description: "Get detailed info about a single member: roles, permissions, join date, boost status, avatar, banner.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, user_id: { type: "string", description: "User ID or username" } }, required: ["user_id"] } },
-  { name: "set_nickname", description: "Set or clear a member's nickname in the guild", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, user_id: { type: "string", description: "User ID or username" }, nickname: { type: "string", description: "New nickname (empty string or null to clear)" } }, required: ["user_id"] } },
-  { name: "create_invite", description: "Create an invite link to a channel", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Channel ID or name" }, max_age: { type: "number", description: "Max age in seconds (0 = never expires, default: 86400)" }, max_uses: { type: "number", description: "Max uses (0 = unlimited, default: 0)" }, temporary: { type: "boolean", description: "Temporary membership invite (default: false)" }, unique: { type: "boolean", description: "Force a new unique invite (default: false)" } }, required: ["channel_id"] } },
-  { name: "list_invites", description: "List all active invites for the guild", inputSchema: { type: "object", properties: { guild_id: { type: "string" } } } },
-  { name: "delete_invite", description: "Delete/revoke an invite by its code", inputSchema: { type: "object", properties: { invite_code: { type: "string" } }, required: ["invite_code"] } },
-  { name: "create_webhook", description: "Create a webhook for a channel", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Channel ID or name" }, name: { type: "string", description: "Webhook name" }, avatar: { type: "string", description: "Avatar URL (optional)" } }, required: ["channel_id", "name"] } },
-  { name: "list_webhooks", description: "List all webhooks for a channel or the entire guild", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Channel ID or name (omit to list all guild webhooks)" } } } },
-  { name: "delete_webhook", description: "Delete a webhook by ID", inputSchema: { type: "object", properties: { webhook_id: { type: "string" } }, required: ["webhook_id"] } },
-  { name: "send_webhook_message", description: "Send a message via a webhook URL (allows custom username and avatar per message)", inputSchema: { type: "object", properties: { webhook_url: { type: "string", description: "Full webhook URL" }, content: { type: "string" }, username: { type: "string", description: "Override display name" }, avatar_url: { type: "string", description: "Override avatar URL" }, embed: { type: "object", description: "Optional embed" } }, required: ["webhook_url"] } },
-  { name: "list_emojis", description: "List all custom emojis in the guild", inputSchema: { type: "object", properties: { guild_id: { type: "string" } } } },
-  { name: "create_emoji", description: "Create a custom emoji from a URL", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, name: { type: "string", description: "Emoji name (alphanumeric and underscores)" }, image_url: { type: "string", description: "URL to the image (PNG, JPG, GIF, max 256KB)" } }, required: ["name", "image_url"] } },
-  { name: "delete_emoji", description: "Delete a custom emoji by ID or name", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, emoji_id: { type: "string", description: "Emoji ID or name" } }, required: ["emoji_id"] } },
-  { name: "get_audit_log", description: "Fetch recent audit log entries for the guild. Filter by action type or user.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, action_type: { type: "string", description: "Action type filter: CHANNEL_CREATE, CHANNEL_DELETE, MEMBER_BAN_ADD, MEMBER_KICK, MESSAGE_DELETE, ROLE_CREATE, etc." }, user_id: { type: "string", description: "Filter by user who performed the action" }, limit: { type: "number", description: "Number of entries (default: 20, max: 100)" } } } },
-  { name: "server_analysis", description: "Full server overview: members, channels, roles, boosts, features. Do NOT use just to find a channel ID \u2014 use list_channels instead.", inputSchema: { type: "object", properties: { guild_id: { type: "string" } } } },
-  { name: "channel_analysis", description: "Analyze message activity in a text channel: top users, top words, message volume, attachments.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" }, limit: { type: "number" } }, required: ["channel_id"] } },
-  { name: "user_analysis", description: "Analyze a user's activity: messages per channel, top words, roles, join date, recent messages.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, user_id: { type: "string" }, limit: { type: "number" } }, required: ["user_id"] } },
-  { name: "create_thread", description: "Create a thread inside a text channel. Attach to a message or create standalone.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" }, name: { type: "string" }, message_id: { type: "string" }, auto_archive_duration: { type: "number" }, reason: { type: "string" } }, required: ["channel_id", "name"] } },
-  { name: "send_thread_message", description: "Send a message inside a thread. Use thread_id (not channel_id).", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, thread_id: { type: "string" }, content: { type: "string" } }, required: ["thread_id", "content"] } },
-  { name: "thread_analysis", description: "Read and analyze all messages in a thread: participants, word frequency, full message history.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, thread_id: { type: "string" }, limit: { type: "number" } }, required: ["thread_id"] } },
-  { name: "list_threads", description: "List active (and optionally archived) threads in a channel or guild", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" }, include_archived: { type: "boolean" } } } },
-  { name: "archive_thread", description: "Archive or unarchive a thread", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, thread_id: { type: "string" }, archived: { type: "boolean" }, locked: { type: "boolean" } }, required: ["thread_id"] } },
-  { name: "create_forum_post", description: "Create a new post (thread) in a Forum channel", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Forum channel ID or name" }, name: { type: "string", description: "Title of the forum post" }, content: { type: "string", description: "Initial message content" }, embed: { type: "object", description: "Optional embed for the initial message" }, auto_archive_duration: { type: "number" } }, required: ["channel_id", "name"] } },
-  { name: "kick_user", description: "Kick a user from the guild. Accepts snowflake ID or username.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, user_id: { type: "string" }, reason: { type: "string" } }, required: ["user_id"] } },
-  { name: "ban_user", description: "Ban a user from the guild. Accepts snowflake ID or username.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, user_id: { type: "string" }, reason: { type: "string" }, delete_message_days: { type: "number" } }, required: ["user_id"] } },
-  { name: "unban_user", description: "Unban a user from the guild by snowflake ID", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, user_id: { type: "string" }, reason: { type: "string" } }, required: ["user_id"] } },
-  { name: "list_bans", description: "List all banned users in the guild", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, limit: { type: "number", description: "Max bans to fetch (default: 100)" } } } },
-  { name: "time_out_user", description: "Timeout a user for a given duration. Accepts snowflake ID or username.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, user_id: { type: "string" }, duration_minutes: { type: "number" }, reason: { type: "string" } }, required: ["user_id", "duration_minutes"] } },
-  { name: "remove_timeout", description: "Remove a timeout from a user", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, user_id: { type: "string" } }, required: ["user_id"] } },
-  { name: "bot_info", description: "Get info about the bot itself: username, ID, avatar, guilds count, uptime", inputSchema: { type: "object", properties: {} } },
-  { name: "set_bot_status", description: "Set the bot's presence status and activity", inputSchema: { type: "object", properties: { status: { type: "string", enum: ["online", "idle", "dnd", "invisible"], description: "Online status" }, activity_type: { type: "string", enum: ["Playing", "Streaming", "Listening", "Watching", "Competing"], description: "Activity type" }, activity_name: { type: "string", description: "Activity text" }, activity_url: { type: "string", description: "Stream URL (only for Streaming type)" } } } },
-  { name: "list_scheduled_events", description: "List all scheduled events in the guild", inputSchema: { type: "object", properties: { guild_id: { type: "string" } } } },
-  { name: "create_scheduled_event", description: "Create a guild scheduled event (external location or voice/stage channel)", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, name: { type: "string" }, description: { type: "string" }, start_time: { type: "string", description: "ISO 8601 datetime" }, end_time: { type: "string", description: "ISO 8601 datetime (required for external events)" }, location: { type: "string", description: "External location (use for external events)" }, channel_id: { type: "string", description: "Voice/Stage channel ID (use for voice/stage events)" }, image_url: { type: "string", description: "Cover image URL" } }, required: ["name", "start_time"] } },
-
-  { name: "list_automod_rules", description: "List all auto moderation rules in the guild.", inputSchema: { type: "object", properties: { guild_id: { type: "string" } } } },
-  { name: "create_automod_rule", description: "Create an auto moderation rule. trigger_type: Keyword, Spam, KeywordPreset, MentionSpam. actions: [{type:'BlockMessage'|'SendAlertMessage'|'Timeout', metadata:{}}]", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, name: { type: "string" }, trigger_type: { type: "string", enum: ["Keyword", "Spam", "KeywordPreset", "MentionSpam"], description: "Rule trigger type" }, trigger_metadata: { type: "object", description: "{ keyword_filter?: string[], regex_patterns?: string[], presets?: ('Profanity'|'SexualContent'|'Slurs')[], allow_list?: string[], mention_total_limit?: number }" }, actions: { type: "array", items: { type: "object" }, description: "[{type:'BlockMessage'|'SendAlertMessage'|'Timeout', metadata:{channel_id?,duration_seconds?}}]" }, enabled: { type: "boolean" }, exempt_roles: { type: "array", items: { type: "string" } }, exempt_channels: { type: "array", items: { type: "string" } }, reason: { type: "string" } }, required: ["name", "trigger_type"] } },
-  { name: "edit_automod_rule", description: "Edit an existing auto moderation rule.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, rule_id: { type: "string" }, name: { type: "string" }, trigger_metadata: { type: "object" }, actions: { type: "array", items: { type: "object" } }, enabled: { type: "boolean" }, exempt_roles: { type: "array", items: { type: "string" } }, exempt_channels: { type: "array", items: { type: "string" } }, reason: { type: "string" } }, required: ["rule_id"] } },
-  { name: "delete_automod_rule", description: "Delete an auto moderation rule by ID.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, rule_id: { type: "string" } }, required: ["rule_id"] } },
-  { name: "list_stickers", description: "List all custom stickers in the guild.", inputSchema: { type: "object", properties: { guild_id: { type: "string" } } } },
-  { name: "create_sticker", description: "Create a custom sticker from a URL.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, name: { type: "string", description: "Sticker name (2-30 chars)" }, tags: { type: "string", description: "Unicode emoji representing the sticker expression" }, file: { type: "string", description: "URL to image (PNG, APNG, GIF, max 512KB, 320x320)" }, description: { type: "string" }, reason: { type: "string" } }, required: ["name", "tags", "file"] } },
-  { name: "delete_sticker", description: "Delete a custom sticker by ID.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, sticker_id: { type: "string" } }, required: ["sticker_id"] } },
-  { name: "download_attachment", description: "Get full metadata and download URLs for all attachments on a message.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" }, message_id: { type: "string" } }, required: ["channel_id", "message_id"] } },
-  { name: "get_avatar", description: "Get avatar and banner URLs for a user or the guild at any resolution.", inputSchema: { type: "object", properties: { user_id: { type: "string", description: "User ID (omit for guild icon/banner)" }, guild_id: { type: "string" }, size: { type: "number", description: "Image size: 16-4096, default 1024" } } } },
-  { name: "reply_dm", description: "Reply to a specific DM message.", inputSchema: { type: "object", properties: { user_id: { type: "string" }, message_id: { type: "string" }, content: { type: "string" }, embed: { type: "object" } }, required: ["user_id", "message_id"] } },
-  { name: "edit_dm", description: "Edit a bot message in DMs.", inputSchema: { type: "object", properties: { user_id: { type: "string" }, message_id: { type: "string" }, content: { type: "string" }, embed: { type: "object" } }, required: ["user_id", "message_id"] } },
-  { name: "delete_dm", description: "Delete a bot message in DMs.", inputSchema: { type: "object", properties: { user_id: { type: "string" }, message_id: { type: "string" } }, required: ["user_id", "message_id"] } },
-  { name: "message_stats", description: "Aggregate message statistics for a channel: messages/day, peak hours, media ratio. Scans up to limit messages.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" }, limit: { type: "number", description: "Messages to scan (default: 100, max: 100)" } }, required: ["channel_id"] } },
-  { name: "role_analysis", description: "Analyze roles: overlapping members, empty roles, members with no roles.", inputSchema: { type: "object", properties: { guild_id: { type: "string" } } } },
-  { name: "emoji_usage", description: "Scan recent messages for emoji usage frequency (custom + unicode).", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" }, limit: { type: "number", description: "Messages to scan (default: 100, max: 100)" } }, required: ["channel_id"] } },
-  { name: "inactive_members", description: "Find members who haven't sent a message in any scanned channel recently.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, days: { type: "number", description: "Inactivity threshold in days (default: 30)" }, scan_limit: { type: "number", description: "Messages to scan per channel (default: 100)" } } } },
-  { name: "prune_members", description: "Prune (or dry-run) inactive members with no roles.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, days: { type: "number", description: "Days of inactivity (default: 7)" }, dry: { type: "boolean", description: "If true, only count without pruning (default: true)" }, roles: { type: "array", items: { type: "string" }, description: "Role IDs to include in prune (bypasses no-role constraint)" }, reason: { type: "string" } }, required: [] } },
-  { name: "edit_guild", description: "Edit guild properties: name, description, icon, banner, splash, system channel, etc.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, name: { type: "string" }, description: { type: "string" }, icon: { type: "string", description: "Icon image URL" }, banner: { type: "string", description: "Banner image URL" }, splash: { type: "string", description: "Invite splash URL" }, system_channel_id: { type: "string" }, rules_channel_id: { type: "string" }, afk_channel_id: { type: "string" }, afk_timeout: { type: "number" }, verification_level: { type: "number" }, reason: { type: "string" } } } },
-  { name: "get_vanity_url", description: "Get the guild's vanity invite URL and usage count.", inputSchema: { type: "object", properties: { guild_id: { type: "string" } } } },
-  { name: "list_forum_tags", description: "List available tags in a Forum channel.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" } }, required: ["channel_id"] } },
-  { name: "edit_forum_tags", description: "Set the available tags for a Forum channel (replaces all existing tags).", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" }, tags: { type: "array", items: { type: "object", properties: { name: { type: "string" }, emoji_name: { type: "string" }, moderated: { type: "boolean" } } }, description: "Array of tag objects" } }, required: ["channel_id", "tags"] } },
-  { name: "send_typing", description: "Send a typing indicator to a channel (lasts ~10 seconds).", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" } }, required: ["channel_id"] } },
-  { name: "send_poll", description: "Send a message with a poll to a channel.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" }, question: { type: "string" }, answers: { type: "array", items: { type: "string" }, description: "Array of answer text strings (max 10)" }, duration_hours: { type: "number", description: "Poll duration in hours (default: 24, max: 168)" }, allow_multiselect: { type: "boolean", description: "Allow multiple answers (default: false)" } }, required: ["channel_id", "question", "answers"] } },
-  { name: "fetch_message_link", description: "Generate a Discord jump-to-message URL.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string" }, message_id: { type: "string" } }, required: ["channel_id", "message_id"] } },
-  { name: "delete_scheduled_event", description: "Delete a scheduled event by ID", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, event_id: { type: "string" } }, required: ["event_id"] } },
-
-  { name: "get_voice_states", description: "See which users are currently in voice channels. Shows channel, mute/deaf status, streaming, video. Optionally filter by channel.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Optional: filter to a specific voice channel ID or name" } } } },
-  { name: "modify_member", description: "Modify multiple member properties in a single call: nickname, roles (add/remove), timeout. All-in-one member management.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, user_id: { type: "string", description: "User ID or username" }, nickname: { type: "string", description: "New nickname (omit to keep current)" }, add_roles: { type: "array", items: { type: "string" }, description: "Role IDs or names to add" }, remove_roles: { type: "array", items: { type: "string" }, description: "Role IDs or names to remove" }, timeout_minutes: { type: "number", description: "Timeout in minutes (0 to remove)" }, reason: { type: "string" } }, required: ["user_id"] } },
-  { name: "get_channel_info", description: "Get detailed info about a single channel: type, topic, parent, NSFW, slowmode, bitrate, voice members, thread properties, etc.", inputSchema: { type: "object", properties: { guild_id: { type: "string" }, channel_id: { type: "string", description: "Channel ID or name" } }, required: ["channel_id"] } },
-];
-
-const BATCHABLE_TOOLS = new Set([
-  "get_messages", "get_message", "search_messages", "get_pinned_messages",
-  "send_message", "reply_message", "edit_message", "delete_message",
-  "pin_message", "unpin_message", "crosspost_message",
-  "add_reaction", "remove_reaction", "get_reactions",
-  "send_dm", "get_dm_history",
-  "get_member", "set_nickname", "assign_role", "remove_role",
-  "kick_user", "ban_user", "unban_user", "time_out_user",
-  "rename_channel", "edit_channel", "set_channel_topic", "move_channel",
-  "clone_channel", "delete", "create_channel", "create_invite",
-  "create_role", "edit_role", "delete_role",
-  "create_thread", "archive_thread", "send_thread_message",
-  "create_webhook", "delete_webhook", "send_webhook_message",
-  "create_emoji", "delete_emoji",
-  "delete_scheduled_event",
-  "create_category", "create_voice_channel",
-  "create_automod_rule", "edit_automod_rule", "delete_automod_rule",
-  "create_sticker", "delete_sticker",
-  "download_attachment", "get_avatar",
-  "reply_dm", "edit_dm", "delete_dm",
-  "send_typing", "send_poll", "fetch_message_link", "edit_forum_tags",
-  "send_dm_by_username", "create_scheduled_event", "create_announcement_channel",
-  "set_channel_permissions", "remove_timeout", "modify_member", "get_channel_info",
-]);
-
-for (const tool of tools) {
-  if (BATCHABLE_TOOLS.has(tool.name)) {
-    const itemProps = { ...tool.inputSchema.properties };
-    delete itemProps.guild_id;
-    tool.inputSchema.properties.requests = {
-      type: "array",
-      description: "Batch mode: array of per-item params. If provided, executes all in parallel and returns array of results.",
-      items: { type: "object", properties: itemProps }
-    };
+function mapMessage(m, { detailed = false } = {}) {
+  const out = {
+    id: m.id,
+    author: m.author.username,
+    author_id: m.author.id,
+    content: m.content,
+    timestamp: m.createdAt,
+  };
+  if (m.author.bot) out.is_bot = true;
+  if (m.editedAt) out.edited = true;
+  if (m.attachments.size) {
+    out.attachments = [...m.attachments.values()].map((a) =>
+      detailed
+        ? { name: a.name, url: a.url, size: a.size, content_type: a.contentType, width: a.width, height: a.height }
+        : { name: a.name, url: a.url, size: a.size }
+    );
   }
+  if (m.embeds.length) {
+    out.embeds = m.embeds.map((e) => ({
+      title: e.title, description: e.description?.slice(0, 300), url: e.url,
+      image: e.image?.url, thumbnail: e.thumbnail?.url,
+    }));
+  }
+  if (m.reactions.cache.size) {
+    out.reactions = [...m.reactions.cache.values()].map((r) => ({ emoji: r.emoji.toString(), count: r.count }));
+  }
+  if (detailed) {
+    out.display_name = m.member?.displayName || m.author.username;
+    out.pinned = m.pinned;
+    out.url = m.url;
+    if (m.reference?.messageId) out.replied_to = m.reference.messageId;
+  }
+  return out;
 }
+
+const CHANNEL_TYPE_NAMES = {
+  [ChannelType.GuildText]: "text",
+  [ChannelType.GuildVoice]: "voice",
+  [ChannelType.GuildCategory]: "category",
+  [ChannelType.GuildAnnouncement]: "announcement",
+  [ChannelType.GuildForum]: "forum",
+  [ChannelType.GuildStageVoice]: "stage",
+  [ChannelType.PublicThread]: "thread",
+  [ChannelType.PrivateThread]: "private_thread",
+  [ChannelType.AnnouncementThread]: "announcement_thread",
+};
+
+function channelTypeName(type) {
+  return CHANNEL_TYPE_NAMES[type] || `type_${type}`;
+}
+
+const CREATE_CHANNEL_TYPES = {
+  text: ChannelType.GuildText,
+  voice: ChannelType.GuildVoice,
+  category: ChannelType.GuildCategory,
+  announcement: ChannelType.GuildAnnouncement,
+  forum: ChannelType.GuildForum,
+  stage: ChannelType.GuildStageVoice,
+};
+
+const ACTIVITY_TYPES = {
+  playing: ActivityType.Playing,
+  streaming: ActivityType.Streaming,
+  listening: ActivityType.Listening,
+  watching: ActivityType.Watching,
+  competing: ActivityType.Competing,
+  custom: ActivityType.Custom,
+};
 
 const AUDIT_LOG_ACTIONS = {
-  CHANNEL_CREATE: AuditLogEvent.ChannelCreate, CHANNEL_UPDATE: AuditLogEvent.ChannelUpdate, CHANNEL_DELETE: AuditLogEvent.ChannelDelete,
-  MEMBER_KICK: AuditLogEvent.MemberKick, MEMBER_BAN_ADD: AuditLogEvent.MemberBanAdd, MEMBER_BAN_REMOVE: AuditLogEvent.MemberBanRemove,
-  MEMBER_UPDATE: AuditLogEvent.MemberUpdate, MEMBER_ROLE_UPDATE: AuditLogEvent.MemberRoleUpdate,
-  ROLE_CREATE: AuditLogEvent.RoleCreate, ROLE_UPDATE: AuditLogEvent.RoleUpdate, ROLE_DELETE: AuditLogEvent.RoleDelete,
-  MESSAGE_DELETE: AuditLogEvent.MessageDelete, MESSAGE_BULK_DELETE: AuditLogEvent.MessageBulkDelete,
-  INVITE_CREATE: AuditLogEvent.InviteCreate, INVITE_DELETE: AuditLogEvent.InviteDelete,
-  WEBHOOK_CREATE: AuditLogEvent.WebhookCreate, WEBHOOK_UPDATE: AuditLogEvent.WebhookUpdate, WEBHOOK_DELETE: AuditLogEvent.WebhookDelete,
-  EMOJI_CREATE: AuditLogEvent.EmojiCreate, EMOJI_DELETE: AuditLogEvent.EmojiDelete, BOT_ADD: AuditLogEvent.BotAdd,
+  member_kick: AuditLogEvent.MemberKick,
+  member_ban: AuditLogEvent.MemberBanAdd,
+  member_unban: AuditLogEvent.MemberBanRemove,
+  member_update: AuditLogEvent.MemberUpdate,
+  member_role_update: AuditLogEvent.MemberRoleUpdate,
+  channel_create: AuditLogEvent.ChannelCreate,
+  channel_update: AuditLogEvent.ChannelUpdate,
+  channel_delete: AuditLogEvent.ChannelDelete,
+  role_create: AuditLogEvent.RoleCreate,
+  role_update: AuditLogEvent.RoleUpdate,
+  role_delete: AuditLogEvent.RoleDelete,
+  message_delete: AuditLogEvent.MessageDelete,
+  message_bulk_delete: AuditLogEvent.MessageBulkDelete,
+  invite_create: AuditLogEvent.InviteCreate,
+  webhook_create: AuditLogEvent.WebhookCreate,
+  guild_update: AuditLogEvent.GuildUpdate,
 };
-const ACTIVITY_TYPES = { Playing: 0, Streaming: 1, Listening: 2, Watching: 3, Competing: 5 };
 
-async function handleTool(name, args) {
-  await requireDiscord();
-  switch (name) {
-    case "set_guild": { const guild = getGuild(args.guild_id); const config = loadConfig(); config.default_guild_id = args.guild_id; saveConfig(config); return { success: true, default_guild_id: args.guild_id, guild_name: guild.name }; }
-    case "get_guild": { const config = loadConfig(); if (!config.default_guild_id) return { default_guild_id: null, message: "No default guild set. Use set_guild." }; try { const guild = getGuild(config.default_guild_id); return { default_guild_id: config.default_guild_id, guild_name: guild.name, member_count: guild.memberCount }; } catch { return { default_guild_id: config.default_guild_id, message: "Saved but bot may no longer be in this server" }; } }
-    case "list_guilds": { const config = loadConfig(); return { guilds: discord.guilds.cache.map((g) => ({ id: g.id, name: g.name, member_count: g.memberCount, is_default: g.id === config.default_guild_id })), default_guild_id: config.default_guild_id || null }; }
-    case "send_dm": { const user = await discord.users.fetch(args.user_id); const dmChannel = await user.createDM(); const payload = buildMessagePayload(args); const msg = await dmChannel.send(payload); return { message_id: msg.id, user_id: args.user_id, username: user.username, status: "sent" }; }
-    case "get_dm_history": { const user = await discord.users.fetch(args.user_id); const dmChannel = await user.createDM(); const limit = Math.min(args.limit || 20, 100); const fetchOpts = { limit }; if (args.before_message_id) fetchOpts.before = args.before_message_id; const messages = await dmChannel.messages.fetch(fetchOpts); return { user_id: args.user_id, username: user.username, messages: [...messages.values()].reverse().map((m) => ({ id: m.id, author: m.author.username, author_id: m.author.id, is_bot: m.author.bot, content: m.content, timestamp: m.createdAt, edited: !!m.editedAt, attachments: mapAttachments(m), embeds: mapEmbeds(m) })) }; }
-    case "bot_info": { const user = discord.user; return { id: user.id, username: user.username, discriminator: user.discriminator, avatar_url: user.displayAvatarURL(), guilds_count: discord.guilds.cache.size, uptime_seconds: Math.floor(discord.uptime / 1000), ready_at: discord.readyAt, ws_ping: discord.ws.ping }; }
-    case "set_bot_status": { const presenceData = {}; if (args.status) presenceData.status = args.status; if (args.activity_name || args.activity_type) { presenceData.activities = [{ name: args.activity_name || "discord-mcp", type: ACTIVITY_TYPES[args.activity_type] ?? 0, ...(args.activity_url && { url: args.activity_url }) }]; } discord.user.setPresence(presenceData); return { status: args.status || "online", activity: args.activity_name || null, type: args.activity_type || null }; }
-    case "delete_invite": { const invite = await discord.fetchInvite(args.invite_code); await invite.delete(); return { deleted: args.invite_code }; }
-    case "delete_webhook": { const webhook = await discord.fetchWebhook(args.webhook_id); await webhook.delete(); return { deleted: args.webhook_id, name: webhook.name }; }
-
-    case "reply_dm": { const user = await discord.users.fetch(args.user_id); const dm = await user.createDM(); const target = await dm.messages.fetch(args.message_id); const payload = { ...buildMessagePayload(args), allowedMentions: { repliedUser: true } }; const msg = await target.reply(payload); return { message_id: msg.id, user_id: args.user_id, replied_to: args.message_id }; }
-    case "edit_dm": { const user = await discord.users.fetch(args.user_id); const dm = await user.createDM(); const msg = await dm.messages.fetch(args.message_id); const payload = buildMessagePayload(args); await msg.edit(payload); return { edited_message_id: args.message_id, user_id: args.user_id }; }
-    case "delete_dm": { const user = await discord.users.fetch(args.user_id); const dm = await user.createDM(); const msg = await dm.messages.fetch(args.message_id); await msg.delete(); return { deleted_message_id: args.message_id, user_id: args.user_id }; }
-    case "get_avatar": { const sz = args.size || 1024; if (args.user_id) { const user = await discord.users.fetch(args.user_id, { force: true }); return { user_id: user.id, username: user.username, avatar_url: user.displayAvatarURL({ size: sz }), banner_url: user.bannerURL({ size: sz }) || null, accent_color: user.hexAccentColor || null }; } const gid = resolveGuildId(args); const g = getGuild(gid); return { guild_id: g.id, name: g.name, icon_url: g.iconURL({ size: sz }), banner_url: g.bannerURL({ size: sz }), splash_url: g.splashURL({ size: sz }) }; }
-    case "send_webhook_message": { const res = await fetch(args.webhook_url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...(args.content && { content: args.content }), ...(args.username && { username: args.username }), ...(args.avatar_url && { avatar_url: args.avatar_url }), ...(args.embed && { embeds: [args.embed] }) }) }); if (!res.ok) throw new Error(`Webhook send failed: ${res.status} ${await res.text()}`); return { status: "sent" }; }
-  }
-  const guildId = resolveGuildId(args); const guild = getGuild(guildId);
-  switch (name) {
-    case "guild_info": { return { id: guild.id, name: guild.name, description: guild.description, icon_url: guild.iconURL({ size: 1024 }), banner_url: guild.bannerURL({ size: 1024 }), splash_url: guild.splashURL({ size: 1024 }), owner_id: guild.ownerId, member_count: guild.memberCount, verification_level: guild.verificationLevel, explicit_content_filter: guild.explicitContentFilter, afk_channel_id: guild.afkChannelId, afk_timeout: guild.afkTimeout, system_channel_id: guild.systemChannelId, rules_channel_id: guild.rulesChannelId, vanity_url_code: guild.vanityURLCode, premium_tier: guild.premiumTier, premium_subscription_count: guild.premiumSubscriptionCount, preferred_locale: guild.preferredLocale, features: guild.features, created_at: guild.createdAt, nsfw_level: guild.nsfwLevel, max_members: guild.maximumMembers }; }
-    case "list_channels": { const channels = guild.channels.cache; return { guild_id: guild.id, guild_name: guild.name, channels: channels.sort((a, b) => (a.position || 0) - (b.position || 0)).map((c) => ({ id: c.id, name: c.name, type: c.type === ChannelType.GuildText ? "text" : c.type === ChannelType.GuildVoice ? "voice" : c.type === ChannelType.GuildCategory ? "category" : c.type === ChannelType.GuildForum ? "forum" : c.type === ChannelType.GuildAnnouncement ? "announcement" : c.type === ChannelType.GuildStageVoice ? "stage" : String(c.type), category_id: c.parentId || null, category_name: c.parent?.name || null, topic: c.topic || null, nsfw: c.nsfw || false })) }; }
-    case "create_channel": { const opts = { name: args.name, type: ChannelType.GuildText, parent: args.category_id || null, topic: args.topic || null }; if (args.nsfw) opts.nsfw = true; if (args.slowmode) opts.rateLimitPerUser = args.slowmode; const ch = await guild.channels.create(opts); return { id: ch.id, name: ch.name, type: "text" }; }
-    case "create_category": { const cat = await guild.channels.create({ name: args.name, type: ChannelType.GuildCategory }); return { id: cat.id, name: cat.name, type: "category" }; }
-    case "create_voice_channel": { const opts = { name: args.name, type: ChannelType.GuildVoice, parent: args.category_id || null, userLimit: args.user_limit || 0 }; if (args.bitrate) opts.bitrate = args.bitrate; const vc = await guild.channels.create(opts); return { id: vc.id, name: vc.name, type: "voice" }; }
-    case "create_announcement_channel": { const ch = await guild.channels.create({ name: args.name, type: ChannelType.GuildAnnouncement, parent: args.category_id || null, topic: args.topic || null }); return { id: ch.id, name: ch.name, type: "announcement" }; }
-    case "edit_channel": { const ch = resolveAnyChannel(guild, args.channel_id); const edits = {}; if (args.name !== undefined) edits.name = args.name; if (args.topic !== undefined) edits.topic = args.topic; if (args.nsfw !== undefined) edits.nsfw = args.nsfw; if (args.slowmode !== undefined) edits.rateLimitPerUser = args.slowmode; if (args.bitrate !== undefined) edits.bitrate = args.bitrate; if (args.user_limit !== undefined) edits.userLimit = args.user_limit; if (args.position !== undefined) edits.position = args.position; if (args.parent_id !== undefined) edits.parent = args.parent_id; if (args.lock_permissions !== undefined) edits.lockPermissions = args.lock_permissions; await ch.edit(edits); return { id: ch.id, name: ch.name, edited: Object.keys(edits) }; }
-    case "rename_channel": { const ch = resolveAnyChannel(guild, args.channel_id); const oldName = ch.name; await ch.setName(args.name); return { id: ch.id, old_name: oldName, new_name: args.name }; }
-    case "set_channel_topic": { const ch = resolveAnyChannel(guild, args.channel_id); if (!ch.isTextBased() || ch.type === ChannelType.GuildVoice) throw new Error("Cannot set topic on this channel type"); await ch.setTopic(args.topic); return { id: ch.id, name: ch.name, topic: args.topic }; }
-    case "move_channel": { const ch = guild.channels.cache.get(args.channel_id); if (!ch) throw new Error(`Channel ${args.channel_id} not found`); await ch.setParent(args.category_id || null); return { id: ch.id, name: ch.name, category_id: args.category_id || null }; }
-    case "clone_channel": { const ch = resolveAnyChannel(guild, args.channel_id); const cloned = await ch.clone({ name: args.name || `${ch.name}-clone` }); return { id: cloned.id, name: cloned.name, original_id: ch.id, original_name: ch.name }; }
-    case "set_channel_permissions": { const ch = resolveAnyChannel(guild, args.channel_id); const allowBits = args.allow ? args.allow.map((p) => PermissionsBitField.Flags[p]).filter(Boolean) : []; const denyBits = args.deny ? args.deny.map((p) => PermissionsBitField.Flags[p]).filter(Boolean) : []; await ch.permissionOverwrites.edit(args.target_id, { ...Object.fromEntries(allowBits.map((b) => { const n = Object.entries(PermissionsBitField.Flags).find(([, v]) => v === b)?.[0]; return [n, true]; })), ...Object.fromEntries(denyBits.map((b) => { const n = Object.entries(PermissionsBitField.Flags).find(([, v]) => v === b)?.[0]; return [n, false]; })) }); return { channel_id: ch.id, target_id: args.target_id, target_type: args.target_type, allowed: args.allow || [], denied: args.deny || [] }; }
-    case "delete": { const ch = guild.channels.cache.get(args.channel_id); if (!ch) throw new Error(`Channel ${args.channel_id} not found`); const chName = ch.name; await ch.delete(args.reason || undefined); return { deleted: args.channel_id, name: chName }; }
-    case "get_messages": { const channel = await resolveTextChannel(guild, args.channel_id); const limit = Math.min(args.limit || 20, 100); const fetchOptions = { limit }; if (args.before_message_id) fetchOptions.before = args.before_message_id; if (args.after_message_id) fetchOptions.after = args.after_message_id; const messages = await channel.messages.fetch(fetchOptions); return { channel_id: channel.id, channel_name: channel.name, messages: [...messages.values()].reverse().map((m) => ({ id: m.id, author: m.author.username, author_id: m.author.id, display_name: m.member?.displayName || m.author.username, content: m.content, timestamp: m.createdAt, edited: !!m.editedAt, attachments: mapAttachments(m), embeds: mapEmbeds(m), reactions: m.reactions.cache.map((r) => ({ emoji: r.emoji.toString(), count: r.count })), reply_to: m.reference?.messageId || null, pinned: m.pinned })) }; }
-    case "get_message": { const channel = await resolveTextChannel(guild, args.channel_id); const m = await channel.messages.fetch(args.message_id); return { id: m.id, author: m.author.username, author_id: m.author.id, display_name: m.member?.displayName || m.author.username, content: m.content, timestamp: m.createdAt, edited: !!m.editedAt, attachments: [...m.attachments.values()].map((a) => ({ name: a.name, url: a.url, size: a.size })), embeds: m.embeds.map((e) => ({ title: e.title, description: e.description?.slice(0, 200), url: e.url })), reactions: m.reactions.cache.map((r) => ({ emoji: r.emoji.toString(), count: r.count })), reply_to: m.reference?.messageId || null, pinned: m.pinned }; }
-    case "search_messages": { const channel = await resolveTextChannel(guild, args.channel_id); const limit = Math.min(args.limit || 100, 100); const messages = await channel.messages.fetch({ limit }); const lower = args.query.toLowerCase(); const matches = [...messages.values()].filter((m) => m.content.toLowerCase().includes(lower)); return { channel_id: channel.id, channel_name: channel.name, query: args.query, total_scanned: messages.size, matches_found: matches.length, messages: matches.reverse().map((m) => ({ id: m.id, author: m.author.username, author_id: m.author.id, content: m.content, timestamp: m.createdAt, attachments: mapAttachments(m), embeds: mapEmbedsShort(m) })) }; }
-    case "send_message": { const channel = await resolveTextChannel(guild, args.channel_id); const payload = buildMessagePayload(args); const msg = await channel.send(payload); return { message_id: msg.id, channel_id: channel.id, channel_name: channel.name }; }
-    case "send_dm_by_username": { const member = await resolveMember(guild, args.username); const dmChannel = await member.user.createDM(); const payload = buildMessagePayload(args); const msg = await dmChannel.send(payload); return { message_id: msg.id, user_id: member.id, username: member.user.username, status: "sent" }; }
-    case "reply_message": { const channel = await resolveTextChannel(guild, args.channel_id); const targetMsg = await channel.messages.fetch(args.message_id); const payload = { ...buildMessagePayload(args), allowedMentions: { repliedUser: args.ping !== false } }; const msg = await targetMsg.reply(payload); return { message_id: msg.id, channel_id: channel.id, replied_to: args.message_id }; }
-    case "edit_message": { const channel = await resolveTextChannel(guild, args.channel_id); const msg = await channel.messages.fetch(args.message_id); const payload = buildMessagePayload(args); await msg.edit(payload); return { edited_message_id: args.message_id, channel_id: channel.id }; }
-    case "pin_message": { const channel = await resolveTextChannel(guild, args.channel_id); const msg = await channel.messages.fetch(args.message_id); await msg.pin(); return { pinned_message_id: args.message_id, channel_id: channel.id, channel_name: channel.name }; }
-    case "unpin_message": { const channel = await resolveTextChannel(guild, args.channel_id); const msg = await channel.messages.fetch(args.message_id); await msg.unpin(); return { unpinned_message_id: args.message_id, channel_id: channel.id, channel_name: channel.name }; }
-    case "get_pinned_messages": { const channel = await resolveTextChannel(guild, args.channel_id); const pinned = await channel.messages.fetchPinned(); return { channel_id: channel.id, channel_name: channel.name, count: pinned.size, messages: [...pinned.values()].map((m) => ({ id: m.id, author: m.author.username, content: m.content, timestamp: m.createdAt, attachments: mapAttachments(m), embeds: mapEmbeds(m) })) }; }
-    case "delete_message": { const channel = await resolveTextChannel(guild, args.channel_id); const msg = await channel.messages.fetch(args.message_id); await msg.delete(); return { deleted_message_id: args.message_id, channel_id: channel.id }; }
-    case "bulk_delete_messages": { const channel = await resolveTextChannel(guild, args.channel_id); if (args.message_ids.length > 100) throw new Error("bulk_delete_messages supports at most 100 messages at once"); const deleted = await channel.bulkDelete(args.message_ids, true); return { channel_id: channel.id, channel_name: channel.name, deleted_count: deleted.size, requested: args.message_ids.length }; }
-    case "add_reaction": { const channel = await resolveTextChannel(guild, args.channel_id); const msg = await channel.messages.fetch(args.message_id); await msg.react(args.emoji); return { message_id: args.message_id, emoji: args.emoji, status: "reacted" }; }
-    case "remove_reaction": { const channel = await resolveTextChannel(guild, args.channel_id); const msg = await channel.messages.fetch(args.message_id); await msg.reactions.resolve(args.emoji)?.users.remove(discord.user.id); return { message_id: args.message_id, emoji: args.emoji, status: "removed" }; }
-    case "get_reactions": { const channel = await resolveTextChannel(guild, args.channel_id); const msg = await channel.messages.fetch(args.message_id); const reaction = msg.reactions.cache.find((r) => r.emoji.toString() === args.emoji || r.emoji.name === args.emoji); if (!reaction) return { emoji: args.emoji, users: [], count: 0 }; const users = await reaction.users.fetch({ limit: args.limit || 100 }); return { emoji: args.emoji, count: reaction.count, users: [...users.values()].map((u) => ({ id: u.id, username: u.username, bot: u.bot })) }; }
-    case "crosspost_message": { const channel = await resolveTextChannel(guild, args.channel_id); if (channel.type !== ChannelType.GuildAnnouncement) throw new Error("Channel is not an announcement channel"); const msg = await channel.messages.fetch(args.message_id); await msg.crosspost(); return { crossposted: args.message_id, channel_id: channel.id }; }
-    case "list_roles": { await guild.roles.fetch(); return { guild_id: guild.id, guild_name: guild.name, roles: guild.roles.cache.filter((r) => r.name !== "@everyone").sort((a, b) => b.position - a.position).map((r) => ({ id: r.id, name: r.name, color: r.hexColor, hoist: r.hoist, mentionable: r.mentionable, position: r.position, member_count: r.members.size, permissions: r.permissions.toArray() })) }; }
-    case "create_role": { const opts = { name: args.name, color: args.color || null, hoist: args.hoist || false, mentionable: args.mentionable || false }; if (args.permissions) opts.permissions = args.permissions.map((p) => PermissionsBitField.Flags[p]).filter(Boolean); const role = await guild.roles.create(opts); return { id: role.id, name: role.name, color: role.hexColor, hoist: role.hoist, mentionable: role.mentionable }; }
-    case "edit_role": { const role = resolveRole(guild, args.role_id); const edits = {}; if (args.name !== undefined) edits.name = args.name; if (args.color !== undefined) edits.color = args.color; if (args.hoist !== undefined) edits.hoist = args.hoist; if (args.mentionable !== undefined) edits.mentionable = args.mentionable; if (args.permissions) edits.permissions = args.permissions.map((p) => PermissionsBitField.Flags[p]).filter(Boolean); await role.edit(edits); return { id: role.id, name: role.name, edited: Object.keys(edits) }; }
-    case "delete_role": { const role = guild.roles.cache.get(args.role_id); if (!role) throw new Error(`Role ${args.role_id} not found`); const roleName = role.name; await role.delete(); return { deleted: args.role_id, name: roleName }; }
-    case "assign_role": { const member = await resolveMember(guild, args.user_id); const role = resolveRole(guild, args.role_id); await member.roles.add(role); return { user_id: member.id, username: member.user.username, role_id: role.id, role_name: role.name, status: "assigned" }; }
-    case "remove_role": { const member = await resolveMember(guild, args.user_id); const role = resolveRole(guild, args.role_id); await member.roles.remove(role); return { user_id: member.id, username: member.user.username, role_id: role.id, role_name: role.name, status: "removed" }; }
-    case "list_members": { const limit = Math.min(args.limit || 100, 1000); await guild.members.fetch({ limit }); let members = [...guild.members.cache.values()]; if (args.role_id) { const role = resolveRole(guild, args.role_id); members = members.filter((m) => m.roles.cache.has(role.id)); } return { guild_id: guild.id, total: members.length, members: members.slice(0, limit).map((m) => ({ id: m.id, username: m.user.username, display_name: m.displayName, is_bot: m.user.bot, joined_at: m.joinedAt, avatar_url: m.displayAvatarURL({ size: 256 }), roles: m.roles.cache.filter((r) => r.name !== "@everyone").map((r) => ({ id: r.id, name: r.name })) })) }; }
-    case "get_member": { const member = await resolveMember(guild, args.user_id); return { id: member.id, username: member.user.username, display_name: member.displayName, nickname: member.nickname, avatar_url: member.displayAvatarURL({ size: 512 }), is_bot: member.user.bot, joined_at: member.joinedAt, account_created_at: member.user.createdAt, boosting_since: member.premiumSince, communication_disabled_until: member.communicationDisabledUntilTimestamp ? new Date(member.communicationDisabledUntilTimestamp) : null, roles: member.roles.cache.filter((r) => r.name !== "@everyone").sort((a, b) => b.position - a.position).map((r) => ({ id: r.id, name: r.name, color: r.hexColor })), permissions: member.permissions.toArray(), presence: member.presence ? { status: member.presence.status, activities: member.presence.activities.map((a) => ({ name: a.name, type: a.type, state: a.state })) } : null }; }
-    case "set_nickname": { const member = await resolveMember(guild, args.user_id); const oldNick = member.nickname; await member.setNickname(args.nickname || null); return { user_id: member.id, username: member.user.username, old_nickname: oldNick, new_nickname: args.nickname || null }; }
-    case "create_invite": { const channel = resolveAnyChannel(guild, args.channel_id); const invite = await channel.createInvite({ maxAge: args.max_age ?? 86400, maxUses: args.max_uses ?? 0, temporary: args.temporary ?? false, unique: args.unique ?? false }); return { code: invite.code, url: invite.url, channel_id: channel.id, max_age: invite.maxAge, max_uses: invite.maxUses, temporary: invite.temporary }; }
-    case "list_invites": { const invites = await guild.invites.fetch(); return { total: invites.size, invites: [...invites.values()].map((i) => ({ code: i.code, url: i.url, channel: i.channel?.name, channel_id: i.channel?.id, inviter: i.inviter?.username, uses: i.uses, max_uses: i.maxUses, max_age: i.maxAge, temporary: i.temporary, created_at: i.createdAt })) }; }
-    case "create_webhook": { const channel = await resolveTextChannel(guild, args.channel_id); const opts = { name: args.name }; if (args.avatar) opts.avatar = args.avatar; const webhook = await channel.createWebhook(opts); return { id: webhook.id, name: webhook.name, url: webhook.url, channel_id: channel.id, token: webhook.token }; }
-    case "list_webhooks": { let webhooks; if (args.channel_id) { const channel = await resolveTextChannel(guild, args.channel_id); webhooks = await channel.fetchWebhooks(); } else { webhooks = await guild.fetchWebhooks(); } return { total: webhooks.size, webhooks: [...webhooks.values()].map((w) => ({ id: w.id, name: w.name, url: w.url, channel_id: w.channelId, channel_name: guild.channels.cache.get(w.channelId)?.name, creator: w.owner?.username })) }; }
-    case "list_emojis": { await guild.emojis.fetch(); return { total: guild.emojis.cache.size, emojis: [...guild.emojis.cache.values()].map((e) => ({ id: e.id, name: e.name, animated: e.animated, url: e.imageURL(), identifier: e.toString(), created_at: e.createdAt, creator: e.author?.username })) }; }
-    case "create_emoji": { const emoji = await guild.emojis.create({ name: args.name, attachment: args.image_url }); return { id: emoji.id, name: emoji.name, url: emoji.imageURL(), identifier: emoji.toString() }; }
-    case "delete_emoji": { let emoji = guild.emojis.cache.get(args.emoji_id); if (!emoji) { const lower = args.emoji_id.toLowerCase(); emoji = guild.emojis.cache.find((e) => e.name.toLowerCase() === lower); } if (!emoji) throw new Error(`Emoji "${args.emoji_id}" not found`); const emojiName = emoji.name; await emoji.delete(); return { deleted: args.emoji_id, name: emojiName }; }
-    case "get_audit_log": { const opts = { limit: Math.min(args.limit || 20, 100) }; if (args.action_type && AUDIT_LOG_ACTIONS[args.action_type] !== undefined) opts.type = AUDIT_LOG_ACTIONS[args.action_type]; if (args.user_id) opts.user = args.user_id; const auditLogs = await guild.fetchAuditLogs(opts); return { total: auditLogs.entries.size, entries: [...auditLogs.entries.values()].map((e) => ({ id: e.id, action: e.action, action_type: Object.entries(AUDIT_LOG_ACTIONS).find(([, v]) => v === e.action)?.[0] || String(e.action), executor: e.executor?.username, executor_id: e.executor?.id, target_id: e.targetId, reason: e.reason, created_at: e.createdAt, changes: e.changes?.map((c) => ({ key: c.key, old: c.old, new: c.new })) })) }; }
-    case "server_analysis": { await guild.members.fetch(); const channels = guild.channels.cache; const members = guild.members.cache; const roles = guild.roles.cache; return { id: guild.id, name: guild.name, description: guild.description, owner_id: guild.ownerId, created_at: guild.createdAt, verification_level: guild.verificationLevel, member_count: guild.memberCount, humans: members.filter((m) => !m.user.bot).size, bots: members.filter((m) => m.user.bot).size, online_members: members.filter((m) => m.presence?.status && m.presence.status !== "offline").size, boost_level: guild.premiumTier, boost_count: guild.premiumSubscriptionCount, channels: { total: channels.size, text: channels.filter((c) => c.type === ChannelType.GuildText).size, voice: channels.filter((c) => c.type === ChannelType.GuildVoice).size, categories: channels.filter((c) => c.type === ChannelType.GuildCategory).size, forums: channels.filter((c) => c.type === ChannelType.GuildForum).size, announcement: channels.filter((c) => c.type === ChannelType.GuildAnnouncement).size, stage: channels.filter((c) => c.type === ChannelType.GuildStageVoice).size, list: channels.map((c) => ({ id: c.id, name: c.name, type: c.type })) }, roles: { total: roles.size, list: roles.filter((r) => r.name !== "@everyone").map((r) => ({ id: r.id, name: r.name, members: r.members.size, color: r.hexColor })) }, features: guild.features, icon_url: guild.iconURL(), banner_url: guild.bannerURL() }; }
-    case "channel_analysis": { const channel = await resolveTextChannel(guild, args.channel_id); const limit = Math.min(args.limit || 100, 100); const messages = await channel.messages.fetch({ limit }); const authorMap = {}, wordFreq = {}; let totalWords = 0, totalChars = 0, hasAttachments = 0, hasEmbeds = 0, botMessages = 0; messages.forEach((msg) => { if (msg.author.bot) { botMessages++; return; } authorMap[msg.author.username] = (authorMap[msg.author.username] || 0) + 1; const words = msg.content.split(/\s+/).filter(Boolean); totalWords += words.length; totalChars += msg.content.length; words.forEach((w) => { const lw = w.toLowerCase().replace(/[^a-z0-9]/g, ""); if (lw.length > 2) wordFreq[lw] = (wordFreq[lw] || 0) + 1; }); if (msg.attachments.size > 0) hasAttachments++; if (msg.embeds.length > 0) hasEmbeds++; }); const humanMessages = messages.size - botMessages; return { channel_id: channel.id, channel_name: channel.name, topic: channel.topic, messages_analyzed: messages.size, human_messages: humanMessages, bot_messages: botMessages, date_range: { from: messages.last()?.createdAt, to: messages.first()?.createdAt }, total_words: totalWords, total_characters: totalChars, avg_words_per_message: (totalWords / (humanMessages || 1)).toFixed(2), messages_with_attachments: hasAttachments, messages_with_embeds: hasEmbeds, top_users: Object.entries(authorMap).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([user, count]) => ({ user, messages: count })), top_words: Object.entries(wordFreq).sort((a, b) => b[1] - a[1]).slice(0, 20).map(([word, count]) => ({ word, count })) }; }
-    case "user_analysis": { const member = await resolveMember(guild, args.user_id); const textChannels = guild.channels.cache.filter((c) => c.type === ChannelType.GuildText && c.viewable); const limit = Math.min(args.limit || 100, 200); const channelStats = [], recentMessages = [], wordFreq = {}; let totalMessages = 0, totalWords = 0; for (const [, channel] of textChannels) { try { const messages = await channel.messages.fetch({ limit }); const userMessages = messages.filter((m) => m.author.id === member.id); if (userMessages.size === 0) continue; totalMessages += userMessages.size; let chWords = 0; userMessages.forEach((msg) => { const words = msg.content.split(/\s+/).filter(Boolean); chWords += words.length; totalWords += words.length; words.forEach((w) => { const lw = w.toLowerCase().replace(/[^a-z0-9]/g, ""); if (lw.length > 2) wordFreq[lw] = (wordFreq[lw] || 0) + 1; }); if (recentMessages.length < 5) recentMessages.push({ content: msg.content.slice(0, 200), channel: channel.name, timestamp: msg.createdAt }); }); channelStats.push({ channel_name: channel.name, channel_id: channel.id, message_count: userMessages.size, words: chWords }); } catch {} } return { user_id: member.id, username: member.user.username, display_name: member.displayName, joined_at: member.joinedAt, account_created_at: member.user.createdAt, is_bot: member.user.bot, nickname: member.nickname, boosting_since: member.premiumSince, roles: member.roles.cache.filter((r) => r.name !== "@everyone").map((r) => ({ id: r.id, name: r.name })), total_messages_found: totalMessages, total_words: totalWords, avg_words_per_message: (totalWords / (totalMessages || 1)).toFixed(2), top_words: Object.entries(wordFreq).sort((a, b) => b[1] - a[1]).slice(0, 20).map(([word, count]) => ({ word, count })), recent_messages: recentMessages, activity_by_channel: channelStats.sort((a, b) => b.message_count - a.message_count) }; }
-    case "create_thread": { const channel = guild.channels.cache.get(args.channel_id); if (!channel) throw new Error(`Channel ${args.channel_id} not found`); const autoArchiveDuration = args.auto_archive_duration || 1440; let thread; if (args.message_id) { if (!channel.isTextBased()) throw new Error("Channel is not text-based"); const msg = await channel.messages.fetch(args.message_id); thread = await msg.startThread({ name: args.name, autoArchiveDuration, reason: args.reason || null }); } else { thread = await channel.threads.create({ name: args.name, autoArchiveDuration, reason: args.reason || null }); } return { thread_id: thread.id, name: thread.name, parent_id: thread.parentId, auto_archive_duration: thread.autoArchiveDuration, archived: thread.archived, locked: thread.locked }; }
-    case "send_thread_message": { const thread = await fetchThread(guild, args.thread_id); const msg = await thread.send(args.content); return { message_id: msg.id, thread_id: args.thread_id, content: args.content }; }
-    case "thread_analysis": { const thread = await fetchThread(guild, args.thread_id); const limit = Math.min(args.limit || 100, 100); const messages = await thread.messages.fetch({ limit }); const authorMap = {}, wordFreq = {}; let totalWords = 0, totalChars = 0, botMessages = 0; const allMessages = []; messages.forEach((msg) => { if (msg.author.bot) { botMessages++; return; } authorMap[msg.author.username] = (authorMap[msg.author.username] || 0) + 1; const words = msg.content.split(/\s+/).filter(Boolean); totalWords += words.length; totalChars += msg.content.length; words.forEach((w) => { const lw = w.toLowerCase().replace(/[^a-z0-9]/g, ""); if (lw.length > 2) wordFreq[lw] = (wordFreq[lw] || 0) + 1; }); allMessages.push({ author: msg.author.username, content: msg.content.slice(0, 500), timestamp: msg.createdAt }); }); const humanMessages = messages.size - botMessages; return { thread_id: thread.id, thread_name: thread.name, parent_channel_id: thread.parentId, archived: thread.archived, locked: thread.locked, messages_analyzed: messages.size, human_messages: humanMessages, bot_messages: botMessages, date_range: { from: messages.last()?.createdAt, to: messages.first()?.createdAt }, total_words: totalWords, total_characters: totalChars, avg_words_per_message: (totalWords / (humanMessages || 1)).toFixed(2), top_users: Object.entries(authorMap).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([user, count]) => ({ user, messages: count })), top_words: Object.entries(wordFreq).sort((a, b) => b[1] - a[1]).slice(0, 20).map(([word, count]) => ({ word, count })), messages: allMessages.reverse() }; }
-    case "list_threads": { const activeThreads = await guild.channels.fetchActiveThreads(); let threads = [...activeThreads.threads.values()]; if (args.channel_id) threads = threads.filter((t) => t.parentId === args.channel_id); const result = threads.map((t) => ({ thread_id: t.id, name: t.name, parent_channel_id: t.parentId, archived: t.archived, locked: t.locked, member_count: t.memberCount, message_count: t.messageCount, auto_archive_duration: t.autoArchiveDuration, created_at: t.createdAt })); if (args.include_archived && args.channel_id) { try { const parentChannel = guild.channels.cache.get(args.channel_id); if (parentChannel?.threads) { const archived = await parentChannel.threads.fetchArchived(); archived.threads.forEach((t) => result.push({ thread_id: t.id, name: t.name, parent_channel_id: t.parentId, archived: true, locked: t.locked, member_count: t.memberCount, message_count: t.messageCount, auto_archive_duration: t.autoArchiveDuration, created_at: t.createdAt })); } } catch {} } return { total: result.length, threads: result }; }
-    case "archive_thread": { const thread = await fetchThread(guild, args.thread_id); const archived = args.archived !== undefined ? args.archived : true; const locked = args.locked || false; await thread.edit({ archived, locked }); return { thread_id: thread.id, name: thread.name, archived, locked }; }
-    case "create_forum_post": { const channel = guild.channels.cache.get(args.channel_id) || guild.channels.cache.find((c) => c.name.toLowerCase() === args.channel_id.toLowerCase()); if (!channel) throw new Error(`Channel "${args.channel_id}" not found`); if (channel.type !== ChannelType.GuildForum) throw new Error(`Channel "${channel.name}" is not a Forum channel`); const messagePayload = buildMessagePayload({ content: args.content, embed: args.embed }); const thread = await channel.threads.create({ name: args.name, autoArchiveDuration: args.auto_archive_duration || 1440, message: messagePayload }); return { thread_id: thread.id, name: thread.name, parent_channel_id: thread.parentId, created_at: thread.createdAt }; }
-    case "kick_user": { const member = await resolveMember(guild, args.user_id); await member.kick(args.reason || "No reason provided"); return { kicked: member.id, username: member.user.username, reason: args.reason || "No reason provided" }; }
-    case "ban_user": { const member = await resolveMember(guild, args.user_id); await guild.members.ban(member.id, { reason: args.reason || "No reason provided", deleteMessageDays: args.delete_message_days || 0 }); return { banned: member.id, username: member.user.username, reason: args.reason || "No reason provided" }; }
-    case "unban_user": { await guild.members.unban(args.user_id, args.reason || "No reason provided"); return { unbanned: args.user_id, reason: args.reason || "No reason provided" }; }
-    case "list_bans": { const bans = await guild.bans.fetch({ limit: args.limit || 100 }); return { total: bans.size, bans: [...bans.values()].map((b) => ({ user_id: b.user.id, username: b.user.username, reason: b.reason })) }; }
-    case "time_out_user": { const member = await resolveMember(guild, args.user_id); const ms = args.duration_minutes * 60 * 1000; await member.timeout(ms, args.reason || "No reason provided"); return { timed_out: member.id, username: member.user.username, duration_minutes: args.duration_minutes, until: new Date(Date.now() + ms), reason: args.reason || "No reason provided" }; }
-    case "remove_timeout": { const member = await resolveMember(guild, args.user_id); await member.timeout(null); return { user_id: member.id, username: member.user.username, status: "timeout_removed" }; }
-    case "list_scheduled_events": { const events = await guild.scheduledEvents.fetch(); return { total: events.size, events: [...events.values()].map((e) => ({ id: e.id, name: e.name, description: e.description, start_time: e.scheduledStartAt, end_time: e.scheduledEndAt, status: e.status, entity_type: e.entityType, channel_id: e.channelId, location: e.entityMetadata?.location, creator: e.creator?.username, user_count: e.userCount, image_url: e.coverImageURL() })) }; }
-    case "create_scheduled_event": { const { GuildScheduledEventEntityType, GuildScheduledEventPrivacyLevel } = await import("discord.js"); const opts = { name: args.name, scheduledStartTime: args.start_time, privacyLevel: GuildScheduledEventPrivacyLevel.GuildOnly, description: args.description || undefined }; if (args.location) { opts.entityType = GuildScheduledEventEntityType.External; opts.entityMetadata = { location: args.location }; opts.scheduledEndTime = args.end_time; } else if (args.channel_id) { const ch = guild.channels.cache.get(args.channel_id); opts.entityType = ch?.type === ChannelType.GuildStageVoice ? GuildScheduledEventEntityType.StageInstance : GuildScheduledEventEntityType.Voice; opts.channel = args.channel_id; if (args.end_time) opts.scheduledEndTime = args.end_time; } else { throw new Error("Either 'location' (for external) or 'channel_id' (for voice/stage) is required"); } if (args.image_url) opts.image = args.image_url; const event = await guild.scheduledEvents.create(opts); return { id: event.id, name: event.name, start_time: event.scheduledStartAt, status: event.status }; }
-    case "delete_scheduled_event": { const event = await guild.scheduledEvents.fetch(args.event_id); await event.delete(); return { deleted: args.event_id, name: event.name }; }
-
-    case "list_automod_rules": { const rules = await guild.autoModerationRules.fetch(); return { total: rules.size, rules: [...rules.values()].map(r => ({ id: r.id, name: r.name, enabled: r.enabled, event_type: r.eventType, trigger_type: r.triggerType, trigger_metadata: { keyword_filter: r.triggerMetadata.keywordFilter, regex_patterns: r.triggerMetadata.regexPatterns, presets: r.triggerMetadata.presets, allow_list: r.triggerMetadata.allowList, mention_total_limit: r.triggerMetadata.mentionTotalLimit }, actions: r.actions.map(a => ({ type: a.type, metadata: a.metadata })), exempt_roles: [...r.exemptRoles.values()].map(ro => ({ id: ro.id, name: ro.name })), exempt_channels: [...r.exemptChannels.values()].map(c => ({ id: c.id, name: c.name })), creator_id: r.creatorId })) }; }
-    case "create_automod_rule": { const { AutoModerationRuleTriggerType: TT, AutoModerationRuleEventType: ET, AutoModerationActionType: AT, AutoModerationRuleKeywordPresetType: KP } = await import("discord.js"); const ttMap = { Keyword: TT.Keyword, Spam: TT.Spam, KeywordPreset: TT.KeywordPreset, MentionSpam: TT.MentionSpam }; const atMap = { BlockMessage: AT.BlockMessage, SendAlertMessage: AT.SendAlertMessage, Timeout: AT.Timeout }; const kpMap = { Profanity: KP.Profanity, SexualContent: KP.SexualContent, Slurs: KP.Slurs }; const opts = { name: args.name, eventType: ET.MessageSend, triggerType: ttMap[args.trigger_type] || TT.Keyword, enabled: args.enabled !== false, actions: (args.actions || [{ type: "BlockMessage" }]).map(a => ({ type: atMap[a.type] || AT.BlockMessage, metadata: a.metadata || {} })) }; if (args.trigger_metadata) { const tm = {}; if (args.trigger_metadata.keyword_filter) tm.keywordFilter = args.trigger_metadata.keyword_filter; if (args.trigger_metadata.regex_patterns) tm.regexPatterns = args.trigger_metadata.regex_patterns; if (args.trigger_metadata.presets) tm.presets = args.trigger_metadata.presets.map(p => kpMap[p] || p); if (args.trigger_metadata.allow_list) tm.allowList = args.trigger_metadata.allow_list; if (args.trigger_metadata.mention_total_limit) tm.mentionTotalLimit = args.trigger_metadata.mention_total_limit; opts.triggerMetadata = tm; } if (args.exempt_roles) opts.exemptRoles = args.exempt_roles; if (args.exempt_channels) opts.exemptChannels = args.exempt_channels; if (args.reason) opts.reason = args.reason; const rule = await guild.autoModerationRules.create(opts); return { id: rule.id, name: rule.name, trigger_type: rule.triggerType, enabled: rule.enabled }; }
-    case "edit_automod_rule": { const { AutoModerationActionType: AT2, AutoModerationRuleKeywordPresetType: KP2 } = await import("discord.js"); const atMap2 = { BlockMessage: AT2.BlockMessage, SendAlertMessage: AT2.SendAlertMessage, Timeout: AT2.Timeout }; const kpMap2 = { Profanity: KP2.Profanity, SexualContent: KP2.SexualContent, Slurs: KP2.Slurs }; const rule = await guild.autoModerationRules.fetch(args.rule_id); const edits = {}; if (args.name !== undefined) edits.name = args.name; if (args.enabled !== undefined) edits.enabled = args.enabled; if (args.actions) edits.actions = args.actions.map(a => ({ type: atMap2[a.type] || AT2.BlockMessage, metadata: a.metadata || {} })); if (args.trigger_metadata) { const tm = {}; if (args.trigger_metadata.keyword_filter) tm.keywordFilter = args.trigger_metadata.keyword_filter; if (args.trigger_metadata.regex_patterns) tm.regexPatterns = args.trigger_metadata.regex_patterns; if (args.trigger_metadata.presets) tm.presets = args.trigger_metadata.presets.map(p => kpMap2[p] || p); if (args.trigger_metadata.allow_list) tm.allowList = args.trigger_metadata.allow_list; if (args.trigger_metadata.mention_total_limit) tm.mentionTotalLimit = args.trigger_metadata.mention_total_limit; edits.triggerMetadata = tm; } if (args.exempt_roles) edits.exemptRoles = args.exempt_roles; if (args.exempt_channels) edits.exemptChannels = args.exempt_channels; if (args.reason) edits.reason = args.reason; await rule.edit(edits); return { id: rule.id, name: rule.name, edited: Object.keys(edits) }; }
-    case "delete_automod_rule": { const rule = await guild.autoModerationRules.fetch(args.rule_id); const rName = rule.name; await rule.delete(); return { deleted: args.rule_id, name: rName }; }
-    case "list_stickers": { const stickers = await guild.stickers.fetch(); return { total: stickers.size, stickers: [...stickers.values()].map(s => ({ id: s.id, name: s.name, description: s.description, tags: s.tags, format: s.format, url: s.url, available: s.available, creator: s.user?.username })) }; }
-    case "create_sticker": { const sticker = await guild.stickers.create({ name: args.name, tags: args.tags, file: args.file, description: args.description || null, reason: args.reason || undefined }); return { id: sticker.id, name: sticker.name, tags: sticker.tags, url: sticker.url }; }
-    case "delete_sticker": { const sticker = await guild.stickers.fetch(args.sticker_id); const sName = sticker.name; await sticker.delete(); return { deleted: args.sticker_id, name: sName }; }
-    case "download_attachment": { const ch = await resolveTextChannel(guild, args.channel_id); const m = await ch.messages.fetch(args.message_id); return { message_id: m.id, channel_id: ch.id, attachments: [...m.attachments.values()].map(a => ({ id: a.id, name: a.name, url: a.url, proxy_url: a.proxyURL, size: a.size, width: a.width, height: a.height, content_type: a.contentType, spoiler: a.spoiler, description: a.description })) }; }
-    case "message_stats": { const ch = await resolveTextChannel(guild, args.channel_id); const limit = Math.min(args.limit || 100, 100); const msgs = await ch.messages.fetch({ limit }); const dayMap = {}, hourMap = {}; let withMedia = 0, withText = 0; for (let i = 0; i < 7; i++) dayMap[i] = 0; for (let i = 0; i < 24; i++) hourMap[i] = 0; msgs.forEach(m => { if (m.author.bot) return; const d = m.createdAt; dayMap[d.getUTCDay()]++; hourMap[d.getUTCHours()]++; if (m.attachments.size > 0 || m.embeds.length > 0) withMedia++; else withText++; }); const days = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]; const first = msgs.last()?.createdAt, last = msgs.first()?.createdAt; const span = first && last ? Math.max(1, Math.ceil((last - first) / 86400000)) : 1; const human = msgs.filter(m => !m.author.bot).size; return { channel_id: ch.id, channel_name: ch.name, messages_scanned: msgs.size, human_messages: human, span_days: span, messages_per_day: (human / span).toFixed(2), media_ratio: human ? (withMedia / human * 100).toFixed(1) + "%" : "0%", by_day_of_week: days.map((d, i) => ({ day: d, count: dayMap[i] })), peak_hour_utc: Object.entries(hourMap).sort((a, b) => b[1] - a[1])[0]?.[0], by_hour_utc: hourMap }; }
-    case "role_analysis": { await guild.members.fetch(); const roles = guild.roles.cache.filter(r => r.name !== "@everyone"); const members = guild.members.cache; const noRoles = members.filter(m => !m.user.bot && m.roles.cache.filter(r => r.name !== "@everyone").size === 0); const emptyRoles = roles.filter(r => r.members.size === 0); const sorted = [...roles.values()].sort((a, b) => b.members.size - a.members.size); return { total_roles: roles.size, members_without_roles: noRoles.size, members_without_roles_list: [...noRoles.values()].slice(0, 50).map(m => ({ id: m.id, username: m.user.username })), empty_roles: emptyRoles.map(r => ({ id: r.id, name: r.name })), top_roles: sorted.slice(0, 15).map(r => ({ id: r.id, name: r.name, member_count: r.members.size })) }; }
-    case "emoji_usage": { const ch = await resolveTextChannel(guild, args.channel_id); const limit = Math.min(args.limit || 100, 100); const msgs = await ch.messages.fetch({ limit }); const freq = {}; const customRe = /<a?:(\w+):(\d+)>/g; const unicodeRe = /(\p{Emoji_Presentation}|\p{Emoji}\uFE0F)/gu; msgs.forEach(m => { if (m.author.bot) return; let match; while ((match = customRe.exec(m.content)) !== null) { const key = "<:" + match[1] + ":" + match[2] + ">"; freq[key] = (freq[key] || 0) + 1; } const uMatches = m.content.match(unicodeRe); if (uMatches) uMatches.forEach(e => { freq[e] = (freq[e] || 0) + 1; }); m.reactions.cache.forEach(r => { const key = r.emoji.toString(); freq[key] = (freq[key] || 0) + r.count; }); }); const sorted = Object.entries(freq).sort((a, b) => b[1] - a[1]); return { channel_id: ch.id, messages_scanned: msgs.size, unique_emojis: sorted.length, top_emojis: sorted.slice(0, 30).map(([emoji, count]) => ({ emoji, count })) }; }
-    case "inactive_members": { const days = args.days || 30; const scanLimit = Math.min(args.scan_limit || 100, 100); const cutoff = Date.now() - days * 86400000; await guild.members.fetch(); const activeIds = new Set(); const textChannels = guild.channels.cache.filter(c => c.type === ChannelType.GuildText && c.viewable); for (const [, ch] of textChannels) { try { const msgs = await ch.messages.fetch({ limit: scanLimit }); msgs.forEach(m => { if (m.createdTimestamp >= cutoff) activeIds.add(m.author.id); }); } catch {} } const inactive = guild.members.cache.filter(m => !m.user.bot && !activeIds.has(m.id)); return { days_threshold: days, channels_scanned: textChannels.size, active_members: activeIds.size, inactive_count: inactive.size, inactive_members: [...inactive.values()].slice(0, 100).map(m => ({ id: m.id, username: m.user.username, joined_at: m.joinedAt, roles: m.roles.cache.filter(r => r.name !== "@everyone").size })) }; }
-    case "prune_members": { const days = args.days || 7; const dry = args.dry !== false; const opts = { days, dry, count: true }; if (args.roles) opts.roles = args.roles; if (args.reason) opts.reason = args.reason; const pruned = await guild.members.prune(opts); return { dry_run: dry, days, pruned_count: pruned }; }
-    case "edit_guild": { const edits = {}; if (args.name !== undefined) edits.name = args.name; if (args.description !== undefined) edits.description = args.description; if (args.icon !== undefined) edits.icon = args.icon; if (args.banner !== undefined) edits.banner = args.banner; if (args.splash !== undefined) edits.splash = args.splash; if (args.system_channel_id !== undefined) edits.systemChannel = args.system_channel_id; if (args.rules_channel_id !== undefined) edits.rulesChannel = args.rules_channel_id; if (args.afk_channel_id !== undefined) edits.afkChannel = args.afk_channel_id; if (args.afk_timeout !== undefined) edits.afkTimeout = args.afk_timeout; if (args.verification_level !== undefined) edits.verificationLevel = args.verification_level; if (args.reason) edits.reason = args.reason; await guild.edit(edits); return { id: guild.id, name: guild.name, edited: Object.keys(edits).filter(k => k !== "reason") }; }
-    case "get_vanity_url": { const vanity = await guild.fetchVanityData(); return { code: vanity.code, url: vanity.code ? "https://discord.gg/" + vanity.code : null, uses: vanity.uses }; }
-    case "list_forum_tags": { const ch = guild.channels.cache.get(args.channel_id); if (!ch || ch.type !== ChannelType.GuildForum) throw new Error("Not a forum channel"); return { channel_id: ch.id, channel_name: ch.name, tags: ch.availableTags.map(t => ({ id: t.id, name: t.name, emoji: t.emoji, moderated: t.moderated })) }; }
-    case "edit_forum_tags": { const ch = guild.channels.cache.get(args.channel_id); if (!ch || ch.type !== ChannelType.GuildForum) throw new Error("Not a forum channel"); await ch.setAvailableTags(args.tags.map(t => ({ name: t.name, emoji: t.emoji_name ? { name: t.emoji_name } : undefined, moderated: t.moderated || false }))); return { channel_id: ch.id, tags_set: args.tags.length }; }
-    case "send_typing": { const ch = await resolveTextChannel(guild, args.channel_id); await ch.sendTyping(); return { channel_id: ch.id, status: "typing" }; }
-    case "send_poll": { const ch = await resolveTextChannel(guild, args.channel_id); const pollData = { question: { text: args.question }, answers: args.answers.slice(0, 10).map(a => ({ text: a })), duration: args.duration_hours || 24, allowMultiselect: args.allow_multiselect || false }; const msg = await ch.send({ poll: pollData }); return { message_id: msg.id, channel_id: ch.id, question: args.question, answers_count: args.answers.length }; }
-    case "fetch_message_link": { const gid = guild.id; return { url: "https://discord.com/channels/" + gid + "/" + args.channel_id + "/" + args.message_id, guild_id: gid, channel_id: args.channel_id, message_id: args.message_id }; }
-    case "get_voice_states": { await guild.members.fetch(); const states = [...guild.voiceStates.cache.values()]; let result = states; if (args.channel_id) { let targetCh = guild.channels.cache.get(args.channel_id); if (!targetCh) { const lower = args.channel_id.toLowerCase(); targetCh = guild.channels.cache.find(c => c.name && c.name.toLowerCase() === lower); } if (targetCh) result = states.filter(s => s.channelId === targetCh.id); } return { guild_id: guild.id, total_in_voice: states.length, showing: result.length, voice_states: result.map(s => ({ user_id: s.id, username: guild.members.cache.get(s.id)?.user.username || "unknown", channel_id: s.channelId, channel_name: guild.channels.cache.get(s.channelId)?.name || "unknown", self_mute: s.selfMute, self_deaf: s.selfDeaf, server_mute: s.serverMute, server_deaf: s.serverDeaf, streaming: s.streaming, video: s.selfVideo, suppress: s.suppress })) }; }
-    case "modify_member": { const member = await resolveMember(guild, args.user_id); const changes = []; if (args.nickname !== undefined) { await member.setNickname(args.nickname || null, args.reason || undefined); changes.push("nickname: " + (args.nickname || "cleared")); } if (args.add_roles?.length) { const roles = args.add_roles.map(r => resolveRole(guild, r)); await member.roles.add(roles, args.reason || undefined); changes.push("added " + roles.length + " role(s)"); } if (args.remove_roles?.length) { const roles = args.remove_roles.map(r => resolveRole(guild, r)); await member.roles.remove(roles, args.reason || undefined); changes.push("removed " + roles.length + " role(s)"); } if (args.timeout_minutes !== undefined) { if (args.timeout_minutes === 0) { await member.timeout(null, args.reason || undefined); changes.push("timeout removed"); } else { await member.timeout(args.timeout_minutes * 60 * 1000, args.reason || undefined); changes.push("timeout " + args.timeout_minutes + "min"); } } return { user_id: member.id, username: member.user.username, changes }; }
-    case "get_channel_info": { const ch = resolveAnyChannel(guild, args.channel_id); const info = { id: ch.id, name: ch.name, type: ch.type === ChannelType.GuildText ? "text" : ch.type === ChannelType.GuildVoice ? "voice" : ch.type === ChannelType.GuildCategory ? "category" : ch.type === ChannelType.GuildForum ? "forum" : ch.type === ChannelType.GuildAnnouncement ? "announcement" : ch.type === ChannelType.GuildStageVoice ? "stage" : ch.type === ChannelType.AnnouncementThread ? "announcement_thread" : ch.type === ChannelType.PublicThread ? "public_thread" : ch.type === ChannelType.PrivateThread ? "private_thread" : String(ch.type), created_at: ch.createdAt, nsfw: ch.nsfw || false, parent_id: ch.parentId || null, parent_name: ch.parent?.name || null, position: ch.position || 0 }; if (ch.isTextBased()) { info.topic = ch.topic || null; info.slowmode = ch.rateLimitPerUser || 0; } if (ch.type === ChannelType.GuildVoice || ch.type === ChannelType.GuildStageVoice) { info.bitrate = ch.bitrate; info.user_limit = ch.userLimit; info.members_in_channel = [...ch.members.values()].map(m => ({ id: m.id, username: m.user.username })); } if (ch.isThread()) { info.archived = ch.archived; info.locked = ch.locked; info.member_count = ch.memberCount; info.message_count = ch.messageCount; info.auto_archive_duration = ch.autoArchiveDuration; info.owner_id = ch.ownerId; } return info; }
-    default: throw new Error(`Unknown tool: ${name}`);
+function requireArgs(args, names) {
+  for (const n of names) {
+    if (args[n] === undefined || args[n] === null || args[n] === "") {
+      throw new Error(`Missing required parameter '${n}' for action '${args.action}'.`);
+    }
   }
 }
 
+function unknownAction(tool, action, actions) {
+  return new Error(`Unknown action "${action}" for tool '${tool}'. Valid actions: ${actions.join(", ")}.`);
+}
+
+// ---------- tool definitions ----------
+
+const GUILD_ID_PROP = { guild_id: { type: "string", description: "Server ID. Omit to use the default guild." } };
+const CHANNEL_PROP = { channel: { type: "string", description: "Channel ID, channel name, or thread ID" } };
+const EMBED_PROP = {
+  embed: {
+    type: "object",
+    description: "Rich embed. All fields optional.",
+    properties: {
+      title: { type: "string" }, description: { type: "string" },
+      color: { type: "string", description: "Hex color like #5865F2" },
+      url: { type: "string" }, image: { type: "string" }, thumbnail: { type: "string" },
+      footer: { type: "string" }, author: { type: "string" },
+      fields: { type: "array", items: { type: "object", properties: { name: { type: "string" }, value: { type: "string" }, inline: { type: "boolean" } } } },
+      timestamp: { type: "boolean" },
+    },
+  },
+};
+
+const tools = [
+  {
+    name: "guild",
+    description: "Manage servers. Actions: set_default (persist a default server ID so other tools don't need guild_id), list (servers the bot is in), info (details of one server), edit (name/description/icon/banner/system channels).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["set_default", "list", "info", "edit"] },
+        ...GUILD_ID_PROP,
+        name: { type: "string" }, description: { type: "string" },
+        icon: { type: "string", description: "Image URL" }, banner: { type: "string", description: "Image URL" },
+        system_channel: { type: "string" }, rules_channel: { type: "string" },
+        afk_channel: { type: "string" }, afk_timeout: { type: "number", description: "Seconds: 60, 300, 900, 1800 or 3600" },
+      },
+      required: ["action"],
+    },
+    annotations: { openWorldHint: true },
+  },
+  {
+    name: "channel",
+    description: "Manage channels and categories. Actions: list (all channels with IDs — use this to resolve names to IDs), info (one channel, includes forum tags and permission overwrites), create, edit (name/topic/nsfw/slowmode/bitrate/user_limit/category/position/forum_tags), clone, delete, set_permissions (per-role or per-user overwrites).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["list", "info", "create", "edit", "clone", "delete", "set_permissions"] },
+        ...GUILD_ID_PROP,
+        ...CHANNEL_PROP,
+        type: { type: "string", enum: ["text", "voice", "category", "announcement", "forum", "stage"], description: "For create. Default text." },
+        name: { type: "string" }, topic: { type: "string" }, nsfw: { type: "boolean" },
+        slowmode: { type: "number", description: "Seconds between messages per user" },
+        bitrate: { type: "number" }, user_limit: { type: "number" }, position: { type: "number" },
+        category: { type: "string", description: "Parent category ID or name. Empty string removes the category." },
+        forum_tags: { type: "array", description: "For forum channels: replaces available tags", items: { type: "object", properties: { name: { type: "string" }, emoji: { type: "string" }, moderated: { type: "boolean" } }, required: ["name"] } },
+        target: { type: "string", description: "For set_permissions: role or user ID" },
+        allow: { type: "array", items: { type: "string" }, description: "Permission flags to allow, e.g. ViewChannel, SendMessages" },
+        deny: { type: "array", items: { type: "string" }, description: "Permission flags to deny" },
+        reason: { type: "string" },
+      },
+      required: ["action"],
+    },
+    annotations: { destructiveHint: true, openWorldHint: true },
+  },
+  {
+    name: "read_messages",
+    description: "Read channel/thread messages. Actions: fetch (recent messages, paginate with before/after), get (one message with full detail incl. attachments, reactions and jump URL), search (substring search over recent messages), pinned (pinned messages), reactions (who reacted with a given emoji).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["fetch", "get", "search", "pinned", "reactions"] },
+        ...GUILD_ID_PROP,
+        ...CHANNEL_PROP,
+        message_id: { type: "string" },
+        query: { type: "string", description: "For search: case-insensitive substring" },
+        emoji: { type: "string", description: "For reactions" },
+        limit: { type: "number", description: "Max messages (default 20 for fetch, 100 for search; cap 100)" },
+        before: { type: "string", description: "Message ID: fetch messages older than this" },
+        after: { type: "string", description: "Message ID: fetch messages newer than this" },
+      },
+      required: ["action", "channel"],
+    },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  },
+  {
+    name: "send_message",
+    description: "Write messages in a channel or thread. Actions: send (text and/or embed), reply (to message_id; ping=false to avoid pinging the author), edit (own message by message_id), poll (question + answers).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["send", "reply", "edit", "poll"] },
+        ...GUILD_ID_PROP,
+        ...CHANNEL_PROP,
+        content: { type: "string" },
+        ...EMBED_PROP,
+        message_id: { type: "string", description: "For reply/edit" },
+        ping: { type: "boolean", description: "For reply: ping the replied user (default true)" },
+        poll: { type: "object", properties: { question: { type: "string" }, answers: { type: "array", items: { type: "string" }, description: "2-10 options" }, duration_hours: { type: "number", description: "Default 24" }, multi_select: { type: "boolean" } }, required: ["question", "answers"] },
+      },
+      required: ["action", "channel"],
+    },
+    annotations: { openWorldHint: true },
+  },
+  {
+    name: "manage_message",
+    description: "Moderate existing messages. Actions: pin, unpin, delete, bulk_delete (up to 100 message_ids, younger than 14 days), react (add emoji), unreact (remove own reaction).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["pin", "unpin", "delete", "bulk_delete", "react", "unreact"] },
+        ...GUILD_ID_PROP,
+        ...CHANNEL_PROP,
+        message_id: { type: "string" },
+        message_ids: { type: "array", items: { type: "string" }, description: "For bulk_delete" },
+        emoji: { type: "string", description: "For react/unreact: unicode emoji or custom emoji like <:name:id>" },
+      },
+      required: ["action", "channel"],
+    },
+    annotations: { destructiveHint: true, openWorldHint: true },
+  },
+  {
+    name: "dm",
+    description: "Direct messages. Actions: send, reply, edit, delete, history. 'user' accepts a user ID or a username (username lookup uses the default guild's members).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["send", "reply", "edit", "delete", "history"] },
+        ...GUILD_ID_PROP,
+        user: { type: "string", description: "User ID or username" },
+        content: { type: "string" },
+        ...EMBED_PROP,
+        message_id: { type: "string", description: "For reply/edit/delete" },
+        limit: { type: "number", description: "For history (default 20, cap 100)" },
+        before: { type: "string", description: "For history: message ID to paginate back from" },
+      },
+      required: ["action", "user"],
+    },
+    annotations: { destructiveHint: true, openWorldHint: true },
+  },
+  {
+    name: "thread",
+    description: "Threads and forum posts. Actions: create (in a text channel, from a message via message_id, or in a forum channel — forum posts require content and accept tags by name), list (active threads, optionally filtered by parent channel), edit (rename, archive, lock). Send/read thread messages with send_message/read_messages using the thread ID as 'channel'.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["create", "list", "edit"] },
+        ...GUILD_ID_PROP,
+        channel: { type: "string", description: "Parent channel (create/list) or thread ID (edit)" },
+        name: { type: "string" },
+        message_id: { type: "string", description: "For create: start the thread from this message" },
+        content: { type: "string", description: "Initial message (required for forum posts)" },
+        ...EMBED_PROP,
+        tags: { type: "array", items: { type: "string" }, description: "For forum posts: tag names to apply" },
+        auto_archive_minutes: { type: "number", enum: [60, 1440, 4320, 10080], description: "Default 1440" },
+        archived: { type: "boolean" }, locked: { type: "boolean" },
+      },
+      required: ["action"],
+    },
+    annotations: { openWorldHint: true },
+  },
+  {
+    name: "role",
+    description: "Manage roles. Actions: list, create, edit, delete, assign (give role to user), remove (take role from user). 'role' and 'user' accept IDs or names.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["list", "create", "edit", "delete", "assign", "remove"] },
+        ...GUILD_ID_PROP,
+        role: { type: "string", description: "Role ID or name" },
+        user: { type: "string", description: "User ID or username (assign/remove)" },
+        name: { type: "string" }, color: { type: "string", description: "Hex like #FF0000" },
+        hoist: { type: "boolean" }, mentionable: { type: "boolean" },
+        permissions: { type: "array", items: { type: "string" }, description: "Permission flags, e.g. ManageMessages, KickMembers" },
+        reason: { type: "string" },
+      },
+      required: ["action"],
+    },
+    annotations: { destructiveHint: true, openWorldHint: true },
+  },
+  {
+    name: "member",
+    description: "Server members. Actions: list (optionally filter by role), get (profile, roles, join date), edit (nickname and/or add_roles/remove_roles in one call), prune (kick members inactive for N days; dry_run=true by default — set dry_run=false to actually prune).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["list", "get", "edit", "prune"] },
+        ...GUILD_ID_PROP,
+        user: { type: "string", description: "User ID or username" },
+        role: { type: "string", description: "For list: only members with this role" },
+        limit: { type: "number", description: "For list (default 100, cap 1000)" },
+        nickname: { type: "string", description: "For edit. Empty string clears it." },
+        add_roles: { type: "array", items: { type: "string" } },
+        remove_roles: { type: "array", items: { type: "string" } },
+        days: { type: "number", description: "For prune: inactivity threshold (default 7)" },
+        dry_run: { type: "boolean", description: "For prune: only count, don't kick (default true)" },
+        reason: { type: "string" },
+      },
+      required: ["action"],
+    },
+    annotations: { destructiveHint: true, openWorldHint: true },
+  },
+  {
+    name: "moderate",
+    description: "Moderation. Actions: kick, ban (delete_message_days 0-7), unban, timeout (duration_minutes, max 40320), remove_timeout, list_bans, audit_log (recent audit entries, filter by audit_action and/or user).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["kick", "ban", "unban", "timeout", "remove_timeout", "list_bans", "audit_log"] },
+        ...GUILD_ID_PROP,
+        user: { type: "string", description: "User ID or username (unban requires the ID)" },
+        reason: { type: "string" },
+        delete_message_days: { type: "number", description: "For ban: purge this many days of messages (0-7)" },
+        duration_minutes: { type: "number", description: "For timeout" },
+        limit: { type: "number", description: "For list_bans/audit_log (default 20-100)" },
+        audit_action: { type: "string", enum: Object.keys(AUDIT_LOG_ACTIONS), description: "For audit_log" },
+      },
+      required: ["action"],
+    },
+    annotations: { destructiveHint: true, openWorldHint: true },
+  },
+  {
+    name: "invite",
+    description: "Invites. Actions: create (for a channel; max_age_seconds 0 = never expires, max_uses 0 = unlimited), list, delete (by code).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["create", "list", "delete"] },
+        ...GUILD_ID_PROP,
+        ...CHANNEL_PROP,
+        code: { type: "string", description: "For delete" },
+        max_age_seconds: { type: "number", description: "Default 86400 (24h)" },
+        max_uses: { type: "number" }, temporary: { type: "boolean" }, unique: { type: "boolean" },
+      },
+      required: ["action"],
+    },
+    annotations: { destructiveHint: true, openWorldHint: true },
+  },
+  {
+    name: "webhook",
+    description: "Webhooks. Actions: create (in a channel; returns the webhook URL), list (all in guild or one channel), delete (by webhook_id), send (post via webhook_url with optional username/avatar_url override).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["create", "list", "delete", "send"] },
+        ...GUILD_ID_PROP,
+        ...CHANNEL_PROP,
+        name: { type: "string" },
+        webhook_id: { type: "string", description: "For delete" },
+        webhook_url: { type: "string", description: "For send" },
+        content: { type: "string" },
+        ...EMBED_PROP,
+        username: { type: "string", description: "For send: display name override" },
+        avatar_url: { type: "string", description: "Avatar image URL (create or send override)" },
+      },
+      required: ["action"],
+    },
+    annotations: { destructiveHint: true, openWorldHint: true },
+  },
+  {
+    name: "automod",
+    description: "AutoMod rules. Actions: list, create, edit, delete. Triggers: keyword (keywords/regex_patterns/allow_list), spam, keyword_preset (presets: profanity, sexual_content, slurs), mention_spam (mention_limit). Responses: block message, alert to a channel, timeout.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["list", "create", "edit", "delete"] },
+        ...GUILD_ID_PROP,
+        rule_id: { type: "string", description: "For edit/delete" },
+        name: { type: "string" },
+        trigger: { type: "string", enum: ["keyword", "spam", "keyword_preset", "mention_spam"], description: "For create" },
+        keywords: { type: "array", items: { type: "string" } },
+        regex_patterns: { type: "array", items: { type: "string" } },
+        presets: { type: "array", items: { type: "string", enum: ["profanity", "sexual_content", "slurs"] } },
+        allow_list: { type: "array", items: { type: "string" } },
+        mention_limit: { type: "number" },
+        block_message: { type: "boolean", description: "Block matching messages (default true on create)" },
+        alert_channel: { type: "string", description: "Channel to send alerts to" },
+        timeout_seconds: { type: "number", description: "Timeout offenders for this long" },
+        enabled: { type: "boolean" },
+        exempt_roles: { type: "array", items: { type: "string" } },
+        exempt_channels: { type: "array", items: { type: "string" } },
+      },
+      required: ["action"],
+    },
+    annotations: { destructiveHint: true, openWorldHint: true },
+  },
+  {
+    name: "bot",
+    description: "The bot itself. Actions: info (identity, uptime, ping, server count), set_status (online/idle/dnd/invisible plus optional activity like 'watching the server').",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["info", "set_status"] },
+        status: { type: "string", enum: ["online", "idle", "dnd", "invisible"] },
+        activity_type: { type: "string", enum: Object.keys(ACTIVITY_TYPES) },
+        activity_name: { type: "string" },
+        activity_url: { type: "string", description: "Only for streaming" },
+      },
+      required: ["action"],
+    },
+    annotations: { openWorldHint: true },
+  },
+];
+
+// ---------- handlers ----------
+
+const handlers = {
+
+  async guild(args) {
+    switch (args.action) {
+      case "set_default": {
+        requireArgs(args, ["guild_id"]);
+        const guild = discord.guilds.cache.get(args.guild_id);
+        if (!guild) throw new Error(`Guild ${args.guild_id} not found. Run guild with action=list to see available servers.`);
+        const config = loadConfig();
+        config.default_guild_id = args.guild_id;
+        saveConfig(config);
+        return { default_guild_id: args.guild_id, guild_name: guild.name, persisted: true };
+      }
+      case "list": {
+        const config = loadConfig();
+        return {
+          default_guild_id: config.default_guild_id || null,
+          guilds: discord.guilds.cache.map((g) => ({
+            id: g.id, name: g.name, member_count: g.memberCount,
+            ...(g.id === config.default_guild_id && { is_default: true }),
+          })),
+        };
+      }
+      case "info": {
+        const g = resolveGuild(args);
+        return {
+          id: g.id, name: g.name, description: g.description,
+          icon_url: g.iconURL({ size: 1024 }), banner_url: g.bannerURL({ size: 1024 }),
+          owner_id: g.ownerId, member_count: g.memberCount, created_at: g.createdAt,
+          verification_level: g.verificationLevel, premium_tier: g.premiumTier,
+          boosts: g.premiumSubscriptionCount, locale: g.preferredLocale,
+          system_channel_id: g.systemChannelId, rules_channel_id: g.rulesChannelId,
+          afk_channel_id: g.afkChannelId, afk_timeout: g.afkTimeout,
+          vanity_code: g.vanityURLCode, features: g.features,
+        };
+      }
+      case "edit": {
+        const g = resolveGuild(args);
+        const edits = {};
+        if (args.name !== undefined) edits.name = args.name;
+        if (args.description !== undefined) edits.description = args.description;
+        if (args.icon !== undefined) edits.icon = args.icon;
+        if (args.banner !== undefined) edits.banner = args.banner;
+        if (args.system_channel !== undefined) edits.systemChannel = args.system_channel || null;
+        if (args.rules_channel !== undefined) edits.rulesChannel = args.rules_channel || null;
+        if (args.afk_channel !== undefined) edits.afkChannel = args.afk_channel || null;
+        if (args.afk_timeout !== undefined) edits.afkTimeout = args.afk_timeout;
+        if (!Object.keys(edits).length) throw new Error("No properties to edit were provided.");
+        await g.edit(edits);
+        return { id: g.id, edited: Object.keys(edits) };
+      }
+      default: throw unknownAction("guild", args.action, ["set_default", "list", "info", "edit"]);
+    }
+  },
+
+  async channel(args) {
+    const guild = resolveGuild(args);
+    switch (args.action) {
+      case "list": {
+        return {
+          guild_id: guild.id,
+          channels: [...guild.channels.cache.values()]
+            .sort((a, b) => (a.rawPosition || 0) - (b.rawPosition || 0))
+            .map((c) => ({
+              id: c.id, name: c.name, type: channelTypeName(c.type),
+              ...(c.parentId && { category_id: c.parentId }),
+              ...(c.topic && { topic: c.topic.slice(0, 100) }),
+            })),
+        };
+      }
+      case "info": {
+        const ch = await resolveChannel(guild, args.channel);
+        const info = {
+          id: ch.id, name: ch.name, type: channelTypeName(ch.type),
+          category_id: ch.parentId, position: ch.rawPosition, created_at: ch.createdAt,
+        };
+        if (ch.topic) info.topic = ch.topic;
+        if (ch.nsfw !== undefined) info.nsfw = ch.nsfw;
+        if (ch.rateLimitPerUser) info.slowmode = ch.rateLimitPerUser;
+        if (ch.bitrate) info.bitrate = ch.bitrate;
+        if (ch.userLimit !== undefined) info.user_limit = ch.userLimit;
+        if (ch.type === ChannelType.GuildForum) {
+          info.forum_tags = ch.availableTags.map((t) => ({ id: t.id, name: t.name, emoji: t.emoji?.name, moderated: t.moderated }));
+        }
+        if (ch.permissionOverwrites) {
+          info.permission_overwrites = [...ch.permissionOverwrites.cache.values()].map((o) => ({
+            target_id: o.id,
+            target: guild.roles.cache.get(o.id)?.name || guild.members.cache.get(o.id)?.user.username || "unknown",
+            type: o.type === 0 ? "role" : "member",
+            allow: o.allow.toArray(), deny: o.deny.toArray(),
+          }));
+        }
+        return info;
+      }
+      case "create": {
+        requireArgs(args, ["name"]);
+        const type = CREATE_CHANNEL_TYPES[args.type || "text"];
+        if (type === undefined) throw new Error(`Unknown channel type "${args.type}". Use: ${Object.keys(CREATE_CHANNEL_TYPES).join(", ")}.`);
+        const opts = { name: args.name, type };
+        if (args.category) opts.parent = (await resolveChannel(guild, args.category)).id;
+        if (args.topic) opts.topic = args.topic;
+        if (args.nsfw) opts.nsfw = true;
+        if (args.slowmode) opts.rateLimitPerUser = args.slowmode;
+        if (args.bitrate) opts.bitrate = args.bitrate;
+        if (args.user_limit) opts.userLimit = args.user_limit;
+        const ch = await guild.channels.create(opts);
+        return { id: ch.id, name: ch.name, type: channelTypeName(ch.type) };
+      }
+      case "edit": {
+        const ch = await resolveChannel(guild, args.channel);
+        const edits = {};
+        if (args.name !== undefined) edits.name = args.name;
+        if (args.topic !== undefined) edits.topic = args.topic;
+        if (args.nsfw !== undefined) edits.nsfw = args.nsfw;
+        if (args.slowmode !== undefined) edits.rateLimitPerUser = args.slowmode;
+        if (args.bitrate !== undefined) edits.bitrate = args.bitrate;
+        if (args.user_limit !== undefined) edits.userLimit = args.user_limit;
+        if (args.position !== undefined) edits.position = args.position;
+        if (args.category !== undefined) edits.parent = args.category ? (await resolveChannel(guild, args.category)).id : null;
+        if (args.forum_tags !== undefined) {
+          if (ch.type !== ChannelType.GuildForum) throw new Error(`"${ch.name}" is not a forum channel; forum_tags only applies to forums.`);
+          edits.availableTags = args.forum_tags.map((t) => ({
+            name: t.name, moderated: t.moderated || false,
+            ...(t.emoji && { emoji: { name: t.emoji } }),
+          }));
+        }
+        if (!Object.keys(edits).length) throw new Error("No properties to edit were provided.");
+        await ch.edit({ ...edits, reason: args.reason });
+        return { id: ch.id, name: ch.name, edited: Object.keys(edits) };
+      }
+      case "clone": {
+        const ch = await resolveChannel(guild, args.channel);
+        const cloned = await ch.clone({ name: args.name || `${ch.name}-clone` });
+        return { id: cloned.id, name: cloned.name, cloned_from: ch.id };
+      }
+      case "delete": {
+        const ch = await resolveChannel(guild, args.channel);
+        const name = ch.name;
+        await ch.delete(args.reason || undefined);
+        return { deleted: ch.id, name };
+      }
+      case "set_permissions": {
+        requireArgs(args, ["target"]);
+        const ch = await resolveChannel(guild, args.channel);
+        permissionFlags(args.allow);
+        permissionFlags(args.deny);
+        const overwrites = {};
+        for (const p of args.allow || []) overwrites[p] = true;
+        for (const p of args.deny || []) overwrites[p] = false;
+        if (!Object.keys(overwrites).length) throw new Error("Provide 'allow' and/or 'deny' permission lists.");
+        await ch.permissionOverwrites.edit(args.target, overwrites, { reason: args.reason });
+        return { channel_id: ch.id, target: args.target, allowed: args.allow || [], denied: args.deny || [] };
+      }
+      default: throw unknownAction("channel", args.action, ["list", "info", "create", "edit", "clone", "delete", "set_permissions"]);
+    }
+  },
+
+  async read_messages(args) {
+    const guild = resolveGuild(args);
+    const channel = await resolveChannel(guild, args.channel, { textOnly: true });
+    switch (args.action) {
+      case "fetch": {
+        const limit = Math.min(args.limit || 20, 100);
+        const opts = { limit };
+        if (args.before) opts.before = args.before;
+        if (args.after) opts.after = args.after;
+        const messages = await channel.messages.fetch(opts);
+        return {
+          channel_id: channel.id, channel_name: channel.name,
+          messages: [...messages.values()].reverse().map((m) => mapMessage(m)),
+        };
+      }
+      case "get": {
+        requireArgs(args, ["message_id"]);
+        const m = await channel.messages.fetch(args.message_id);
+        return mapMessage(m, { detailed: true });
+      }
+      case "search": {
+        requireArgs(args, ["query"]);
+        const limit = Math.min(args.limit || 100, 100);
+        const messages = await channel.messages.fetch({ limit });
+        const lower = args.query.toLowerCase();
+        const matches = [...messages.values()].filter((m) => m.content.toLowerCase().includes(lower));
+        return {
+          channel_id: channel.id, query: args.query,
+          scanned: messages.size, match_count: matches.length,
+          matches: matches.map((m) => mapMessage(m)),
+        };
+      }
+      case "pinned": {
+        const pinned = await channel.messages.fetchPinned();
+        return { channel_id: channel.id, count: pinned.size, messages: [...pinned.values()].map((m) => mapMessage(m)) };
+      }
+      case "reactions": {
+        requireArgs(args, ["message_id", "emoji"]);
+        const m = await channel.messages.fetch(args.message_id);
+        const reaction = m.reactions.cache.find((r) => r.emoji.toString() === args.emoji || r.emoji.name === args.emoji);
+        if (!reaction) return { emoji: args.emoji, count: 0, users: [] };
+        const users = await reaction.users.fetch({ limit: Math.min(args.limit || 100, 100) });
+        return { emoji: reaction.emoji.toString(), count: reaction.count, users: [...users.values()].map((u) => ({ id: u.id, username: u.username })) };
+      }
+      default: throw unknownAction("read_messages", args.action, ["fetch", "get", "search", "pinned", "reactions"]);
+    }
+  },
+
+  async send_message(args) {
+    const guild = resolveGuild(args);
+    const channel = await resolveChannel(guild, args.channel, { textOnly: true });
+    switch (args.action) {
+      case "send": {
+        const msg = await channel.send(buildMessagePayload(args));
+        return { message_id: msg.id, channel_id: channel.id, url: msg.url };
+      }
+      case "reply": {
+        requireArgs(args, ["message_id"]);
+        const target = await channel.messages.fetch(args.message_id);
+        const payload = { ...buildMessagePayload(args), allowedMentions: { repliedUser: args.ping !== false } };
+        const msg = await target.reply(payload);
+        return { message_id: msg.id, channel_id: channel.id, replied_to: args.message_id };
+      }
+      case "edit": {
+        requireArgs(args, ["message_id"]);
+        const msg = await channel.messages.fetch(args.message_id);
+        await msg.edit(buildMessagePayload(args));
+        return { edited: args.message_id, channel_id: channel.id };
+      }
+      case "poll": {
+        requireArgs(args, ["poll"]);
+        const p = args.poll;
+        if (!p.question || !p.answers?.length) throw new Error("poll requires 'question' and 'answers'.");
+        const msg = await channel.send({
+          poll: {
+            question: { text: p.question },
+            answers: p.answers.slice(0, 10).map((a) => ({ text: a })),
+            duration: p.duration_hours || 24,
+            allowMultiselect: p.multi_select || false,
+          },
+        });
+        return { message_id: msg.id, channel_id: channel.id, question: p.question };
+      }
+      default: throw unknownAction("send_message", args.action, ["send", "reply", "edit", "poll"]);
+    }
+  },
+
+  async manage_message(args) {
+    const guild = resolveGuild(args);
+    const channel = await resolveChannel(guild, args.channel, { textOnly: true });
+    const fetchMsg = async () => {
+      requireArgs(args, ["message_id"]);
+      return await channel.messages.fetch(args.message_id);
+    };
+    switch (args.action) {
+      case "pin": { const m = await fetchMsg(); await m.pin(); return { pinned: m.id, channel_id: channel.id }; }
+      case "unpin": { const m = await fetchMsg(); await m.unpin(); return { unpinned: m.id, channel_id: channel.id }; }
+      case "delete": { const m = await fetchMsg(); await m.delete(); return { deleted: m.id, channel_id: channel.id }; }
+      case "bulk_delete": {
+        requireArgs(args, ["message_ids"]);
+        if (args.message_ids.length > 100) throw new Error("bulk_delete supports at most 100 messages per call.");
+        const deleted = await channel.bulkDelete(args.message_ids, true);
+        return { channel_id: channel.id, deleted_count: deleted.size, requested: args.message_ids.length };
+      }
+      case "react": {
+        requireArgs(args, ["emoji"]);
+        const m = await fetchMsg();
+        await m.react(args.emoji);
+        return { message_id: m.id, emoji: args.emoji, reacted: true };
+      }
+      case "unreact": {
+        requireArgs(args, ["emoji"]);
+        const m = await fetchMsg();
+        const reaction = m.reactions.cache.find((r) => r.emoji.toString() === args.emoji || r.emoji.name === args.emoji);
+        if (!reaction) throw new Error(`No reaction "${args.emoji}" found on message ${m.id}.`);
+        await reaction.users.remove(discord.user.id);
+        return { message_id: m.id, emoji: args.emoji, removed: true };
+      }
+      default: throw unknownAction("manage_message", args.action, ["pin", "unpin", "delete", "bulk_delete", "react", "unreact"]);
+    }
+  },
+
+  async dm(args) {
+    let user;
+    if (ID_RE.test(args.user || "")) {
+      user = await discord.users.fetch(args.user);
+    } else {
+      const guild = resolveGuild(args);
+      user = (await resolveMember(guild, args.user)).user;
+    }
+    const dmChannel = await user.createDM();
+    switch (args.action) {
+      case "send": {
+        const msg = await dmChannel.send(buildMessagePayload(args));
+        return { message_id: msg.id, user_id: user.id, username: user.username };
+      }
+      case "reply": {
+        requireArgs(args, ["message_id"]);
+        const target = await dmChannel.messages.fetch(args.message_id);
+        const msg = await target.reply({ ...buildMessagePayload(args), allowedMentions: { repliedUser: true } });
+        return { message_id: msg.id, user_id: user.id, replied_to: args.message_id };
+      }
+      case "edit": {
+        requireArgs(args, ["message_id"]);
+        const msg = await dmChannel.messages.fetch(args.message_id);
+        await msg.edit(buildMessagePayload(args));
+        return { edited: args.message_id, user_id: user.id };
+      }
+      case "delete": {
+        requireArgs(args, ["message_id"]);
+        const msg = await dmChannel.messages.fetch(args.message_id);
+        await msg.delete();
+        return { deleted: args.message_id, user_id: user.id };
+      }
+      case "history": {
+        const opts = { limit: Math.min(args.limit || 20, 100) };
+        if (args.before) opts.before = args.before;
+        const messages = await dmChannel.messages.fetch(opts);
+        return {
+          user_id: user.id, username: user.username,
+          messages: [...messages.values()].reverse().map((m) => mapMessage(m)),
+        };
+      }
+      default: throw unknownAction("dm", args.action, ["send", "reply", "edit", "delete", "history"]);
+    }
+  },
+
+  async thread(args) {
+    const guild = resolveGuild(args);
+    switch (args.action) {
+      case "create": {
+        requireArgs(args, ["channel", "name"]);
+        const parent = await resolveChannel(guild, args.channel);
+        const autoArchiveDuration = args.auto_archive_minutes || 1440;
+        if (parent.type === ChannelType.GuildForum) {
+          if (!args.content && !args.embed) throw new Error("Forum posts require 'content' (or an embed) for the initial message.");
+          let appliedTags;
+          if (args.tags?.length) {
+            appliedTags = args.tags.map((name) => {
+              const tag = parent.availableTags.find((t) => t.name.toLowerCase() === name.toLowerCase());
+              if (!tag) throw new Error(`Forum tag "${name}" not found. Available: ${parent.availableTags.map((t) => t.name).join(", ") || "none"}.`);
+              return tag.id;
+            });
+          }
+          const post = await parent.threads.create({
+            name: args.name, autoArchiveDuration,
+            message: buildMessagePayload(args),
+            ...(appliedTags && { appliedTags }),
+          });
+          return { thread_id: post.id, name: post.name, parent_id: parent.id, type: "forum_post", url: `https://discord.com/channels/${guild.id}/${post.id}` };
+        }
+        if (!parent.isTextBased()) throw new Error(`Cannot create a thread in "${parent.name}" (${channelTypeName(parent.type)}).`);
+        let thread;
+        if (args.message_id) {
+          const msg = await parent.messages.fetch(args.message_id);
+          thread = await msg.startThread({ name: args.name, autoArchiveDuration });
+        } else {
+          thread = await parent.threads.create({ name: args.name, autoArchiveDuration });
+        }
+        if (args.content || args.embed) await thread.send(buildMessagePayload(args));
+        return { thread_id: thread.id, name: thread.name, parent_id: parent.id };
+      }
+      case "list": {
+        const active = await guild.channels.fetchActiveThreads();
+        let threads = [...active.threads.values()];
+        if (args.channel) {
+          const parent = await resolveChannel(guild, args.channel);
+          threads = threads.filter((t) => t.parentId === parent.id);
+        }
+        return {
+          count: threads.length,
+          threads: threads.map((t) => ({
+            id: t.id, name: t.name, parent_id: t.parentId,
+            archived: t.archived, locked: t.locked,
+            message_count: t.messageCount, member_count: t.memberCount,
+          })),
+        };
+      }
+      case "edit": {
+        requireArgs(args, ["channel"]);
+        const thread = await resolveChannel(guild, args.channel);
+        if (!thread.isThread()) throw new Error(`"${thread.name}" is not a thread.`);
+        const edits = {};
+        if (args.name !== undefined) edits.name = args.name;
+        if (args.archived !== undefined) edits.archived = args.archived;
+        if (args.locked !== undefined) edits.locked = args.locked;
+        if (args.auto_archive_minutes !== undefined) edits.autoArchiveDuration = args.auto_archive_minutes;
+        if (!Object.keys(edits).length) throw new Error("No properties to edit were provided.");
+        await thread.edit(edits);
+        return { thread_id: thread.id, name: thread.name, edited: Object.keys(edits) };
+      }
+      default: throw unknownAction("thread", args.action, ["create", "list", "edit"]);
+    }
+  },
+
+  async role(args) {
+    const guild = resolveGuild(args);
+    switch (args.action) {
+      case "list": {
+        await guild.roles.fetch();
+        return {
+          roles: [...guild.roles.cache.values()]
+            .filter((r) => r.name !== "@everyone")
+            .sort((a, b) => b.position - a.position)
+            .map((r) => ({
+              id: r.id, name: r.name, color: r.hexColor, position: r.position,
+              member_count: r.members.size, hoist: r.hoist, mentionable: r.mentionable,
+            })),
+        };
+      }
+      case "create": {
+        requireArgs(args, ["name"]);
+        const opts = {
+          name: args.name, color: args.color || null,
+          hoist: args.hoist || false, mentionable: args.mentionable || false,
+          reason: args.reason,
+        };
+        if (args.permissions) opts.permissions = permissionFlags(args.permissions);
+        const role = await guild.roles.create(opts);
+        return { id: role.id, name: role.name, color: role.hexColor };
+      }
+      case "edit": {
+        const role = resolveRole(guild, args.role);
+        const edits = {};
+        if (args.name !== undefined) edits.name = args.name;
+        if (args.color !== undefined) edits.color = args.color;
+        if (args.hoist !== undefined) edits.hoist = args.hoist;
+        if (args.mentionable !== undefined) edits.mentionable = args.mentionable;
+        if (args.permissions) edits.permissions = permissionFlags(args.permissions);
+        if (!Object.keys(edits).length) throw new Error("No properties to edit were provided.");
+        await role.edit({ ...edits, reason: args.reason });
+        return { id: role.id, name: role.name, edited: Object.keys(edits) };
+      }
+      case "delete": {
+        const role = resolveRole(guild, args.role);
+        const name = role.name;
+        await role.delete(args.reason);
+        return { deleted: role.id, name };
+      }
+      case "assign": {
+        const member = await resolveMember(guild, args.user);
+        const role = resolveRole(guild, args.role);
+        await member.roles.add(role, args.reason);
+        return { user: member.user.username, user_id: member.id, role: role.name, assigned: true };
+      }
+      case "remove": {
+        const member = await resolveMember(guild, args.user);
+        const role = resolveRole(guild, args.role);
+        await member.roles.remove(role, args.reason);
+        return { user: member.user.username, user_id: member.id, role: role.name, removed: true };
+      }
+      default: throw unknownAction("role", args.action, ["list", "create", "edit", "delete", "assign", "remove"]);
+    }
+  },
+
+  async member(args) {
+    const guild = resolveGuild(args);
+    switch (args.action) {
+      case "list": {
+        const limit = Math.min(args.limit || 100, 1000);
+        await guild.members.fetch();
+        let members = [...guild.members.cache.values()];
+        if (args.role) {
+          const role = resolveRole(guild, args.role);
+          members = members.filter((m) => m.roles.cache.has(role.id));
+        }
+        return {
+          total: members.length,
+          members: members.slice(0, limit).map((m) => ({
+            id: m.id, username: m.user.username, display_name: m.displayName,
+            ...(m.user.bot && { is_bot: true }),
+            joined_at: m.joinedAt,
+          })),
+        };
+      }
+      case "get": {
+        const m = await resolveMember(guild, args.user);
+        return {
+          id: m.id, username: m.user.username, display_name: m.displayName,
+          nickname: m.nickname, is_bot: m.user.bot,
+          avatar_url: m.displayAvatarURL({ size: 512 }),
+          joined_at: m.joinedAt, account_created_at: m.user.createdAt,
+          boosting_since: m.premiumSince,
+          timed_out_until: m.communicationDisabledUntil,
+          roles: m.roles.cache.filter((r) => r.name !== "@everyone").map((r) => ({ id: r.id, name: r.name })),
+        };
+      }
+      case "edit": {
+        const m = await resolveMember(guild, args.user);
+        const changes = [];
+        if (args.nickname !== undefined) {
+          await m.setNickname(args.nickname || null, args.reason);
+          changes.push(`nickname: ${args.nickname || "cleared"}`);
+        }
+        if (args.add_roles?.length) {
+          const roles = args.add_roles.map((r) => resolveRole(guild, r));
+          await m.roles.add(roles, args.reason);
+          changes.push(`added roles: ${roles.map((r) => r.name).join(", ")}`);
+        }
+        if (args.remove_roles?.length) {
+          const roles = args.remove_roles.map((r) => resolveRole(guild, r));
+          await m.roles.remove(roles, args.reason);
+          changes.push(`removed roles: ${roles.map((r) => r.name).join(", ")}`);
+        }
+        if (!changes.length) throw new Error("Provide 'nickname', 'add_roles' and/or 'remove_roles'.");
+        return { user_id: m.id, username: m.user.username, changes };
+      }
+      case "prune": {
+        const days = args.days || 7;
+        const dry = args.dry_run !== false;
+        const count = await guild.members.prune({ days, dry, count: true, reason: args.reason });
+        return { dry_run: dry, days, [dry ? "would_prune" : "pruned"]: count };
+      }
+      default: throw unknownAction("member", args.action, ["list", "get", "edit", "prune"]);
+    }
+  },
+
+  async moderate(args) {
+    const guild = resolveGuild(args);
+    const reason = args.reason || "No reason provided";
+    switch (args.action) {
+      case "kick": {
+        const m = await resolveMember(guild, args.user);
+        await m.kick(reason);
+        return { kicked: m.id, username: m.user.username, reason };
+      }
+      case "ban": {
+        const m = await resolveMember(guild, args.user);
+        await guild.members.ban(m.id, { reason, deleteMessageSeconds: (args.delete_message_days || 0) * 86400 });
+        return { banned: m.id, username: m.user.username, reason };
+      }
+      case "unban": {
+        requireArgs(args, ["user"]);
+        if (!ID_RE.test(args.user)) throw new Error("unban requires the user's ID (banned users aren't members, so names can't be resolved). Use action=list_bans to find it.");
+        await guild.members.unban(args.user, reason);
+        return { unbanned: args.user, reason };
+      }
+      case "timeout": {
+        requireArgs(args, ["duration_minutes"]);
+        const m = await resolveMember(guild, args.user);
+        const ms = args.duration_minutes * 60 * 1000;
+        await m.timeout(ms, reason);
+        return { timed_out: m.id, username: m.user.username, duration_minutes: args.duration_minutes, until: new Date(Date.now() + ms), reason };
+      }
+      case "remove_timeout": {
+        const m = await resolveMember(guild, args.user);
+        await m.timeout(null);
+        return { user_id: m.id, username: m.user.username, timeout_removed: true };
+      }
+      case "list_bans": {
+        const bans = await guild.bans.fetch({ limit: Math.min(args.limit || 100, 1000) });
+        return { total: bans.size, bans: [...bans.values()].map((b) => ({ user_id: b.user.id, username: b.user.username, reason: b.reason })) };
+      }
+      case "audit_log": {
+        const opts = { limit: Math.min(args.limit || 20, 100) };
+        if (args.audit_action) opts.type = AUDIT_LOG_ACTIONS[args.audit_action];
+        if (args.user && ID_RE.test(args.user)) opts.user = args.user;
+        const logs = await guild.fetchAuditLogs(opts);
+        return {
+          entries: [...logs.entries.values()].map((e) => ({
+            action: Object.keys(AuditLogEvent).find((k) => AuditLogEvent[k] === e.action) || e.action,
+            executor: e.executor?.username, target_id: e.targetId,
+            reason: e.reason, created_at: e.createdAt,
+          })),
+        };
+      }
+      default: throw unknownAction("moderate", args.action, ["kick", "ban", "unban", "timeout", "remove_timeout", "list_bans", "audit_log"]);
+    }
+  },
+
+  async invite(args) {
+    const guild = resolveGuild(args);
+    switch (args.action) {
+      case "create": {
+        requireArgs(args, ["channel"]);
+        const ch = await resolveChannel(guild, args.channel);
+        const invite = await ch.createInvite({
+          maxAge: args.max_age_seconds ?? 86400,
+          maxUses: args.max_uses ?? 0,
+          temporary: args.temporary ?? false,
+          unique: args.unique ?? false,
+        });
+        return { code: invite.code, url: invite.url, channel_id: ch.id, max_age: invite.maxAge, max_uses: invite.maxUses };
+      }
+      case "list": {
+        const invites = await guild.invites.fetch();
+        return {
+          total: invites.size,
+          invites: [...invites.values()].map((i) => ({
+            code: i.code, url: i.url, channel: i.channel?.name,
+            inviter: i.inviter?.username, uses: i.uses, max_uses: i.maxUses,
+            max_age: i.maxAge, created_at: i.createdAt,
+          })),
+        };
+      }
+      case "delete": {
+        requireArgs(args, ["code"]);
+        const invite = await discord.fetchInvite(args.code);
+        await invite.delete();
+        return { deleted: args.code };
+      }
+      default: throw unknownAction("invite", args.action, ["create", "list", "delete"]);
+    }
+  },
+
+  async webhook(args) {
+    switch (args.action) {
+      case "create": {
+        requireArgs(args, ["channel", "name"]);
+        const guild = resolveGuild(args);
+        const ch = await resolveChannel(guild, args.channel, { textOnly: true });
+        const opts = { name: args.name };
+        if (args.avatar_url) opts.avatar = args.avatar_url;
+        const webhook = await ch.createWebhook(opts);
+        return { id: webhook.id, name: webhook.name, url: webhook.url, channel_id: ch.id };
+      }
+      case "list": {
+        const guild = resolveGuild(args);
+        let webhooks;
+        if (args.channel) {
+          const ch = await resolveChannel(guild, args.channel, { textOnly: true });
+          webhooks = await ch.fetchWebhooks();
+        } else {
+          webhooks = await guild.fetchWebhooks();
+        }
+        return {
+          total: webhooks.size,
+          webhooks: [...webhooks.values()].map((w) => ({
+            id: w.id, name: w.name, url: w.url, channel_id: w.channelId,
+            channel_name: guild.channels.cache.get(w.channelId)?.name,
+            creator: w.owner?.username,
+          })),
+        };
+      }
+      case "delete": {
+        requireArgs(args, ["webhook_id"]);
+        const webhook = await discord.fetchWebhook(args.webhook_id);
+        await webhook.delete();
+        return { deleted: args.webhook_id, name: webhook.name };
+      }
+      case "send": {
+        requireArgs(args, ["webhook_url"]);
+        const payload = buildMessagePayload(args);
+        const body = {
+          ...(payload.content && { content: payload.content }),
+          ...(payload.embeds && { embeds: payload.embeds }),
+          ...(args.username && { username: args.username }),
+          ...(args.avatar_url && { avatar_url: args.avatar_url }),
+        };
+        const res = await fetch(args.webhook_url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) throw new Error(`Webhook send failed: ${res.status} ${await res.text()}`);
+        return { sent: true };
+      }
+      default: throw unknownAction("webhook", args.action, ["create", "list", "delete", "send"]);
+    }
+  },
+
+  async automod(args) {
+    const guild = resolveGuild(args);
+    const TRIGGERS = {
+      keyword: AutoModerationRuleTriggerType.Keyword,
+      spam: AutoModerationRuleTriggerType.Spam,
+      keyword_preset: AutoModerationRuleTriggerType.KeywordPreset,
+      mention_spam: AutoModerationRuleTriggerType.MentionSpam,
+    };
+    const PRESETS = {
+      profanity: AutoModerationRuleKeywordPresetType.Profanity,
+      sexual_content: AutoModerationRuleKeywordPresetType.SexualContent,
+      slurs: AutoModerationRuleKeywordPresetType.Slurs,
+    };
+    const buildActions = async () => {
+      const actions = [];
+      if (args.block_message !== false) actions.push({ type: AutoModerationActionType.BlockMessage });
+      if (args.alert_channel) {
+        const ch = await resolveChannel(guild, args.alert_channel, { textOnly: true });
+        actions.push({ type: AutoModerationActionType.SendAlertMessage, metadata: { channel: ch.id } });
+      }
+      if (args.timeout_seconds) {
+        actions.push({ type: AutoModerationActionType.Timeout, metadata: { durationSeconds: args.timeout_seconds } });
+      }
+      return actions;
+    };
+    switch (args.action) {
+      case "list": {
+        const rules = await guild.autoModerationRules.fetch();
+        return {
+          total: rules.size,
+          rules: [...rules.values()].map((r) => ({
+            id: r.id, name: r.name, enabled: r.enabled,
+            trigger: Object.keys(TRIGGERS).find((k) => TRIGGERS[k] === r.triggerType) || r.triggerType,
+            keywords: r.triggerMetadata.keywordFilter?.length ? r.triggerMetadata.keywordFilter : undefined,
+            regex_patterns: r.triggerMetadata.regexPatterns?.length ? r.triggerMetadata.regexPatterns : undefined,
+            mention_limit: r.triggerMetadata.mentionTotalLimit || undefined,
+            actions: r.actions.map((a) => ({
+              type: Object.keys(AutoModerationActionType).find((k) => AutoModerationActionType[k] === a.type),
+              channel_id: a.metadata?.channelId || undefined,
+              duration_seconds: a.metadata?.durationSeconds || undefined,
+            })),
+          })),
+        };
+      }
+      case "create": {
+        requireArgs(args, ["name", "trigger"]);
+        const triggerType = TRIGGERS[args.trigger];
+        if (triggerType === undefined) throw new Error(`Unknown trigger "${args.trigger}". Use: ${Object.keys(TRIGGERS).join(", ")}.`);
+        const triggerMetadata = {};
+        if (args.keywords) triggerMetadata.keywordFilter = args.keywords;
+        if (args.regex_patterns) triggerMetadata.regexPatterns = args.regex_patterns;
+        if (args.allow_list) triggerMetadata.allowList = args.allow_list;
+        if (args.presets) triggerMetadata.presets = args.presets.map((p) => PRESETS[p]).filter((p) => p !== undefined);
+        if (args.mention_limit) triggerMetadata.mentionTotalLimit = args.mention_limit;
+        const actions = await buildActions();
+        if (!actions.length) throw new Error("At least one response is required: block_message, alert_channel, or timeout_seconds.");
+        const rule = await guild.autoModerationRules.create({
+          name: args.name,
+          eventType: AutoModerationRuleEventType.MessageSend,
+          triggerType, triggerMetadata, actions,
+          enabled: args.enabled !== false,
+          ...(args.exempt_roles && { exemptRoles: args.exempt_roles.map((r) => resolveRole(guild, r).id) }),
+          ...(args.exempt_channels && { exemptChannels: await Promise.all(args.exempt_channels.map(async (c) => (await resolveChannel(guild, c)).id)) }),
+        });
+        return { id: rule.id, name: rule.name, enabled: rule.enabled };
+      }
+      case "edit": {
+        requireArgs(args, ["rule_id"]);
+        const rule = await guild.autoModerationRules.fetch(args.rule_id);
+        const edits = {};
+        if (args.name !== undefined) edits.name = args.name;
+        if (args.enabled !== undefined) edits.enabled = args.enabled;
+        const triggerMetadata = { ...rule.triggerMetadata };
+        let metaChanged = false;
+        if (args.keywords) { triggerMetadata.keywordFilter = args.keywords; metaChanged = true; }
+        if (args.regex_patterns) { triggerMetadata.regexPatterns = args.regex_patterns; metaChanged = true; }
+        if (args.allow_list) { triggerMetadata.allowList = args.allow_list; metaChanged = true; }
+        if (args.mention_limit) { triggerMetadata.mentionTotalLimit = args.mention_limit; metaChanged = true; }
+        if (metaChanged) edits.triggerMetadata = triggerMetadata;
+        if (args.block_message !== undefined || args.alert_channel || args.timeout_seconds) {
+          edits.actions = await buildActions();
+        }
+        if (!Object.keys(edits).length) throw new Error("No properties to edit were provided.");
+        await rule.edit(edits);
+        return { id: rule.id, name: rule.name, edited: Object.keys(edits) };
+      }
+      case "delete": {
+        requireArgs(args, ["rule_id"]);
+        const rule = await guild.autoModerationRules.fetch(args.rule_id);
+        const name = rule.name;
+        await rule.delete();
+        return { deleted: args.rule_id, name };
+      }
+      default: throw unknownAction("automod", args.action, ["list", "create", "edit", "delete"]);
+    }
+  },
+
+  async bot(args) {
+    switch (args.action) {
+      case "info": {
+        const u = discord.user;
+        return {
+          id: u.id, username: u.username, avatar_url: u.displayAvatarURL(),
+          guilds: discord.guilds.cache.size,
+          uptime_seconds: Math.floor(discord.uptime / 1000),
+          ws_ping_ms: discord.ws.ping,
+        };
+      }
+      case "set_status": {
+        const presence = {};
+        if (args.status) presence.status = args.status;
+        if (args.activity_name || args.activity_type) {
+          presence.activities = [{
+            name: args.activity_name || "discord-mcp",
+            type: ACTIVITY_TYPES[args.activity_type] ?? ActivityType.Playing,
+            ...(args.activity_url && { url: args.activity_url }),
+          }];
+        }
+        if (!Object.keys(presence).length) throw new Error("Provide 'status' and/or an activity.");
+        discord.user.setPresence(presence);
+        return { status: args.status || "unchanged", activity: args.activity_name || null };
+      }
+      default: throw unknownAction("bot", args.action, ["info", "set_status"]);
+    }
+  },
+};
+
+// Batch mode: every tool accepts an optional `requests` array. Each item is a
+// full set of per-item params merged over the top-level args (top-level values
+// like guild_id or action act as shared defaults). Executes in parallel.
+for (const tool of tools) {
+  tool.inputSchema.properties.requests = {
+    type: "array",
+    items: { type: "object" },
+    description: "Batch mode: array of param objects (same fields as this tool). Runs all in parallel; top-level params are shared defaults.",
+  };
+}
+
+// ---------- server wiring ----------
+
+const server = new Server(
+  { name: "discord-mcp", version: "6.0.0" },
+  { capabilities: { tools: {} } }
+);
+
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
+
+const ERROR_HINTS = {
+  50013: "The bot is missing permissions for this action. Check its role permissions and role position in Server Settings.",
+  50001: "The bot cannot access this channel or resource. Check channel permission overwrites.",
+  10003: "Unknown channel — it may have been deleted. Run channel with action=list.",
+  10008: "Unknown message — it may have been deleted or is in a different channel.",
+  10011: "Unknown role. Run role with action=list.",
+  10013: "Unknown user.",
+  50007: "Cannot send DMs to this user (they may have DMs disabled or blocked the bot).",
+  50035: "Discord rejected the request payload — a field is invalid or too long.",
+  160002: "Cannot reply: the referenced message no longer exists.",
+};
+
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
+  const { name, arguments: args = {} } = request.params;
   try {
-    if (args.requests && BATCHABLE_TOOLS.has(name)) {
-      const results = await Promise.allSettled(args.requests.map(async (req) => {
-        const mergedArgs = { ...args, ...req };
-        delete mergedArgs.requests;
-        return await handleTool(name, mergedArgs);
+    const handler = handlers[name];
+    if (!handler) throw new Error(`Unknown tool: ${name}`);
+    const validActions = tools.find((t) => t.name === name).inputSchema.properties.action.enum;
+    const checkAction = (a) => { if (!validActions.includes(a.action)) throw unknownAction(name, a.action, validActions); };
+    await discordReady;
+    let result;
+    if (Array.isArray(args.requests) && args.requests.length) {
+      const settled = await Promise.allSettled(args.requests.map(async (req) => {
+        const merged = { ...args, ...req };
+        delete merged.requests;
+        checkAction(merged);
+        return handler(merged);
       }));
-      const batchResult = results.map((r, i) =>
+      result = settled.map((r, i) =>
         r.status === "fulfilled"
           ? { ...r.value, status: "success" }
           : { ...args.requests[i], status: "failed", error: r.reason?.message }
       );
-      return { content: [{ type: "text", text: JSON.stringify(batchResult, null, 2) }] };
+    } else {
+      checkAction(args);
+      result = await handler(args);
     }
-    const result = await handleTool(name, args);
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  } catch (err) {
-    return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
+    let text = JSON.stringify(result, null, 2);
+    if (text.length > MAX_RESPONSE_CHARS) {
+      text = text.slice(0, MAX_RESPONSE_CHARS) + `\n... [truncated at ${MAX_RESPONSE_CHARS} chars — use 'limit' or pagination parameters to narrow the request]`;
+    }
+    return { content: [{ type: "text", text }] };
+  } catch (error) {
+    let message = error.message;
+    if (error.code && ERROR_HINTS[error.code]) message += ` — ${ERROR_HINTS[error.code]}`;
+    return { content: [{ type: "text", text: `Error: ${message}` }], isError: true };
   }
 });
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
+process.stderr.write("discord-mcp v6.0.0 running (14 tools)\n");
