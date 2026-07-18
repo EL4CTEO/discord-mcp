@@ -1,8 +1,10 @@
 # Discord MCP
 
-Compact Discord MCP server for Claude — full Discord control in **14 consolidated tools**.
+Compact Discord MCP server for Claude — full Discord control in **13 consolidated tools**.
 
-**v6.0.0** — Complete remaster. The 101 tools of v5 are consolidated into 14 resource-grouped tools with an `action` parameter, cutting the tool-schema context cost by **~72%** (61k → 17k chars) while keeping every useful capability. Batch mode is preserved on all tools.
+**v6.1.0** — Complete remaster. The 101 tools of v5 are consolidated into 13 resource-grouped tools with an `action` parameter, cutting the tool-schema context cost by **~70%** while keeping every useful capability. Batch mode is preserved on all tools.
+
+> **Why no tool is named `send_message`:** some MCP clients (including Claude Desktop) silently drop MCP tools whose names collide with the client's own built-in tools — `send_message` and `read_messages` are both taken. v6.1 uses `message` and `history` instead so every tool actually reaches the model.
 
 ## Design
 
@@ -10,7 +12,7 @@ Each tool covers one resource and takes an `action`:
 
 ```json
 { "tool": "channel", "action": "create", "name": "announcements", "type": "announcement" }
-{ "tool": "send_message", "action": "reply", "channel": "general", "message_id": "123", "content": "Done!" }
+{ "tool": "message", "action": "reply", "channel": "general", "message_id": "123", "content": "Done!" }
 { "tool": "role", "action": "assign", "user": "el4cteo", "role": "Moderator" }
 ```
 
@@ -91,15 +93,14 @@ claude mcp add discord -s user -e DISCORD_BOT_TOKEN=YOUR_TOKEN -- npx -y github:
 
 ---
 
-## Tools (14 total)
+## Tools (13 total)
 
 | Tool | Actions | Covers |
 |------|---------|--------|
 | `guild` | set_default, list, info, edit | Server selection and settings |
 | `channel` | list, info, create, edit, clone, delete, set_permissions | All channel types incl. forums (tags via `info`/`edit`), categories, permission overwrites |
-| `read_messages` | fetch, get, search, pinned, reactions | Reading history, message detail incl. attachments and jump URL, substring search, who-reacted |
-| `send_message` | send, reply, edit, poll | Text, rich embeds, replies (with/without ping), polls — works in channels and threads |
-| `manage_message` | pin, unpin, delete, bulk_delete, react, unreact | Message moderation and reactions |
+| `history` | fetch, get, search, pinned, reactions | Reading messages, message detail incl. attachments and jump URL, substring search, who-reacted |
+| `message` | send, reply, edit, poll, pin, unpin, delete, bulk_delete, react, unreact | Text, rich embeds, replies, polls, pinning, deleting, reactions — works in channels and threads |
 | `dm` | send, reply, edit, delete, history | Direct messages; `user` accepts ID or username |
 | `thread` | create, list, edit | Threads from channels or messages, forum posts with tags, archive/lock |
 | `role` | list, create, edit, delete, assign, remove | Role management by ID or name |
@@ -112,7 +113,7 @@ claude mcp add discord -s user -e DISCORD_BOT_TOKEN=YOUR_TOKEN -- npx -y github:
 
 ### Removed in v6
 
-Analytics tools (`server_analysis`, `channel_analysis`, `user_analysis`, `thread_analysis`, `message_stats`, `role_analysis`, `emoji_usage`, `inactive_members`), scheduled events, emoji/sticker management, `send_typing`, `get_vanity_url` (now in `guild` → `info`), `get_avatar`, `crosspost_message`, and `get_voice_states`. The underlying data is still reachable through `read_messages` and `member` where it matters.
+Analytics tools (`server_analysis`, `channel_analysis`, `user_analysis`, `thread_analysis`, `message_stats`, `role_analysis`, `emoji_usage`, `inactive_members`), scheduled events, emoji/sticker management, `send_typing`, `get_vanity_url` (now in `guild` → `info`), `get_avatar`, `crosspost_message`, and `get_voice_states`. The underlying data is still reachable through `history` and `member` where it matters.
 
 ---
 

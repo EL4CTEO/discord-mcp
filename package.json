@@ -1,7 +1,7 @@
 {
   "name": "discord-mcp",
-  "version": "6.0.0",
-  "description": "Compact Discord MCP server for Claude — full Discord control in 14 consolidated tools",
+  "version": "6.1.0",
+  "description": "Compact Discord MCP server for Claude — full Discord control in 13 consolidated tools",
   "main": "index.js",
   "bin": {
     "discord-mcp": "index.js"

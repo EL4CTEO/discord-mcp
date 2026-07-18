@@ -312,7 +312,7 @@ const tools = [
     annotations: { destructiveHint: true, openWorldHint: true },
   },
   {
-    name: "read_messages",
+    name: "history",
     description: "Read channel/thread messages. Actions: fetch (recent messages, paginate with before/after), get (one message with full detail incl. attachments, reactions and jump URL), search (substring search over recent messages), pinned (pinned messages), reactions (who reacted with a given emoji).",
     inputSchema: {
       type: "object",
@@ -332,36 +332,21 @@ const tools = [
     annotations: { readOnlyHint: true, openWorldHint: true },
   },
   {
-    name: "send_message",
-    description: "Write messages in a channel or thread. Actions: send (text and/or embed), reply (to message_id; ping=false to avoid pinging the author), edit (own message by message_id), poll (question + answers).",
+    name: "message",
+    description: "Write and moderate messages in a channel or thread. Actions: send (text and/or embed), reply (to message_id; ping=false to avoid pinging the author), edit (own message), poll (question + answers), pin, unpin, delete, bulk_delete (up to 100 message_ids, younger than 14 days), react (add emoji), unreact (remove own reaction).",
     inputSchema: {
       type: "object",
       properties: {
-        action: { type: "string", enum: ["send", "reply", "edit", "poll"] },
+        action: { type: "string", enum: ["send", "reply", "edit", "poll", "pin", "unpin", "delete", "bulk_delete", "react", "unreact"] },
         ...GUILD_ID_PROP,
         ...CHANNEL_PROP,
         content: { type: "string" },
         ...EMBED_PROP,
-        message_id: { type: "string", description: "For reply/edit" },
-        ping: { type: "boolean", description: "For reply: ping the replied user (default true)" },
-        poll: { type: "object", properties: { question: { type: "string" }, answers: { type: "array", items: { type: "string" }, description: "2-10 options" }, duration_hours: { type: "number", description: "Default 24" }, multi_select: { type: "boolean" } }, required: ["question", "answers"] },
-      },
-      required: ["action", "channel"],
-    },
-    annotations: { openWorldHint: true },
-  },
-  {
-    name: "manage_message",
-    description: "Moderate existing messages. Actions: pin, unpin, delete, bulk_delete (up to 100 message_ids, younger than 14 days), react (add emoji), unreact (remove own reaction).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        action: { type: "string", enum: ["pin", "unpin", "delete", "bulk_delete", "react", "unreact"] },
-        ...GUILD_ID_PROP,
-        ...CHANNEL_PROP,
-        message_id: { type: "string" },
+        message_id: { type: "string", description: "For reply/edit/pin/unpin/delete/react/unreact" },
         message_ids: { type: "array", items: { type: "string" }, description: "For bulk_delete" },
         emoji: { type: "string", description: "For react/unreact: unicode emoji or custom emoji like <:name:id>" },
+        ping: { type: "boolean", description: "For reply: ping the replied user (default true)" },
+        poll: { type: "object", properties: { question: { type: "string" }, answers: { type: "array", items: { type: "string" }, description: "2-10 options" }, duration_hours: { type: "number", description: "Default 24" }, multi_select: { type: "boolean" } }, required: ["question", "answers"] },
       },
       required: ["action", "channel"],
     },
@@ -388,7 +373,7 @@ const tools = [
   },
   {
     name: "thread",
-    description: "Threads and forum posts. Actions: create (in a text channel, from a message via message_id, or in a forum channel — forum posts require content and accept tags by name), list (active threads, optionally filtered by parent channel), edit (rename, archive, lock). Send/read thread messages with send_message/read_messages using the thread ID as 'channel'.",
+    description: "Threads and forum posts. Actions: create (in a text channel, from a message via message_id, or in a forum channel — forum posts require content and accept tags by name), list (active threads, optionally filtered by parent channel), edit (rename, archive, lock). Send/read thread messages with the message/history tools using the thread ID as 'channel'.",
     inputSchema: {
       type: "object",
       properties: {
@@ -709,7 +694,7 @@ const handlers = {
     }
   },
 
-  async read_messages(args) {
+  async history(args) {
     const guild = resolveGuild(args);
     const channel = await resolveChannel(guild, args.channel, { textOnly: true });
     switch (args.action) {
@@ -753,13 +738,17 @@ const handlers = {
         const users = await reaction.users.fetch({ limit: Math.min(args.limit || 100, 100) });
         return { emoji: reaction.emoji.toString(), count: reaction.count, users: [...users.values()].map((u) => ({ id: u.id, username: u.username })) };
       }
-      default: throw unknownAction("read_messages", args.action, ["fetch", "get", "search", "pinned", "reactions"]);
+      default: throw unknownAction("history", args.action, ["fetch", "get", "search", "pinned", "reactions"]);
     }
   },
 
-  async send_message(args) {
+  async message(args) {
     const guild = resolveGuild(args);
     const channel = await resolveChannel(guild, args.channel, { textOnly: true });
+    const fetchMsg = async () => {
+      requireArgs(args, ["message_id"]);
+      return await channel.messages.fetch(args.message_id);
+    };
     switch (args.action) {
       case "send": {
         const msg = await channel.send(buildMessagePayload(args));
@@ -792,18 +781,6 @@ const handlers = {
         });
         return { message_id: msg.id, channel_id: channel.id, question: p.question };
       }
-      default: throw unknownAction("send_message", args.action, ["send", "reply", "edit", "poll"]);
-    }
-  },
-
-  async manage_message(args) {
-    const guild = resolveGuild(args);
-    const channel = await resolveChannel(guild, args.channel, { textOnly: true });
-    const fetchMsg = async () => {
-      requireArgs(args, ["message_id"]);
-      return await channel.messages.fetch(args.message_id);
-    };
-    switch (args.action) {
       case "pin": { const m = await fetchMsg(); await m.pin(); return { pinned: m.id, channel_id: channel.id }; }
       case "unpin": { const m = await fetchMsg(); await m.unpin(); return { unpinned: m.id, channel_id: channel.id }; }
       case "delete": { const m = await fetchMsg(); await m.delete(); return { deleted: m.id, channel_id: channel.id }; }
@@ -827,7 +804,7 @@ const handlers = {
         await reaction.users.remove(discord.user.id);
         return { message_id: m.id, emoji: args.emoji, removed: true };
       }
-      default: throw unknownAction("manage_message", args.action, ["pin", "unpin", "delete", "bulk_delete", "react", "unreact"]);
+      default: throw unknownAction("message", args.action, ["send", "reply", "edit", "poll", "pin", "unpin", "delete", "bulk_delete", "react", "unreact"]);
     }
   },
 
@@ -1351,7 +1328,7 @@ for (const tool of tools) {
 // ---------- server wiring ----------
 
 const server = new Server(
-  { name: "discord-mcp", version: "6.0.0" },
+  { name: "discord-mcp", version: "6.1.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -1408,4 +1385,4 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-process.stderr.write("discord-mcp v6.0.0 running (14 tools)\n");
+process.stderr.write("discord-mcp v6.1.0 running (13 tools)\n");
