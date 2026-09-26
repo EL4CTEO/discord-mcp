@@ -1,123 +1,161 @@
-# Discord MCP
+<p align="center">
+  <img src="assets/logo.svg" width="120" alt="Discord MCP logo">
+</p>
 
-Compact Discord MCP server for Claude — full Discord control in **13 consolidated tools**.
+<h1 align="center">Discord MCP</h1>
 
-**v6.1.0** — Complete remaster. The 101 tools of v5 are consolidated into 13 resource-grouped tools with an `action` parameter, cutting the tool-schema context cost by **~70%** while keeping every useful capability. Batch mode is preserved on all tools.
+<p align="center">
+  Control a Discord bot from Claude Code or any MCP client: messages, channels, roles, members, moderation and live events.
+</p>
 
-> **Why no tool is named `send_message`:** some MCP clients (including Claude Desktop) silently drop MCP tools whose names collide with the client's own built-in tools — `send_message` and `read_messages` are both taken. v6.1 uses `message` and `history` instead so every tool actually reaches the model.
+<p align="center">
+  <a href="https://www.npmjs.com/package/@el4cteo/discord-mcp"><img src="https://img.shields.io/npm/v/@el4cteo/discord-mcp?color=5865F2" alt="npm version"></a>
+  <img src="https://img.shields.io/badge/node-%E2%89%A520.10-339933" alt="Node 20.10+">
+  <img src="https://img.shields.io/badge/TypeScript-strict-3178C6" alt="TypeScript">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license">
+</p>
 
-## Design
+## Features
 
-Each tool covers one resource and takes an `action`:
-
-```json
-{ "tool": "channel", "action": "create", "name": "announcements", "type": "announcement" }
-{ "tool": "message", "action": "reply", "channel": "general", "message_id": "123", "content": "Done!" }
-{ "tool": "role", "action": "assign", "user": "el4cteo", "role": "Moderator" }
-```
-
-- `channel`, `user`, and `role` parameters accept **IDs or names** everywhere.
-- Set a default server once with `guild` → `set_default`; after that `guild_id` is never needed.
-- Errors are actionable: wrong action names list the valid ones, missing permissions say what to check.
-- Responses are compact JSON; anything above 25k chars is truncated with a hint to paginate.
-
-## Batch Mode
-
-Every tool accepts an optional `requests` array. Items run in parallel; top-level params act as shared defaults:
-
-```json
-{
-  "tool": "channel",
-  "action": "create",
-  "requests": [
-    { "name": "general" },
-    { "name": "memes", "nsfw": true },
-    { "name": "voice-lounge", "type": "voice" }
-  ]
-}
-```
-
-Each result carries `status: "success"` or `status: "failed"` with the error message.
-
----
+- **33 tools**: messages, DMs, file uploads, polls, channels, threads, forum posts, members, roles, moderation and live events
+- **Names instead of IDs**: say `"general"` or `"@everyone"`, never a snowflake
+- **Bulk on every tool**: pass an array anywhere a single value goes. `discord_batch` mixes different tools
+- **Long messages just work**: text over 2000 characters is split cleanly, and code blocks stay intact
+- **Safe by default**: destructive tools stay hidden until you enable them
+- **Helpful errors**: every error says *how to fix it*, not just what broke
 
 ## Setup
 
-### 1. Create a Discord Bot
+1. Create a bot at [discord.com/developers/applications](https://discord.com/developers/applications) -> **New Application** -> **Bot** -> **Reset Token**.
+2. On the same Bot page enable **Message Content Intent** and **Server Members Intent**.
+3. Invite it to your server via **OAuth2 -> URL Generator** (scopes: `bot`, `applications.commands`).
 
-1. Go to the [Discord Developer Portal](https://discord.com/developers/applications)
-2. Create a new application → Bot
-3. Enable these **Privileged Intents**: `Server Members`, `Message Content`
-4. Copy the bot token
-5. Invite the bot (replace `YOUR_CLIENT_ID`):
-
-```
-https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=8544854581706231&integration_type=0&scope=bot
-```
-
-### 2. Install
+## Add to Claude Code
 
 ```bash
-npm install -g github:EL4CTEO/discord-mcp
+claude mcp add discord --env DISCORD_TOKEN=your_token_here -- npx -y @el4cteo/discord-mcp
 ```
 
-### 3. Configure your client
+Or from a local clone:
 
-#### Claude Desktop (`claude_desktop_config.json`)
+```bash
+git clone https://github.com/EL4CTEO/discord-mcp.git
+cd discord-mcp && npm install   # also builds
+claude mcp add discord --env DISCORD_TOKEN=your_token_here -- node /absolute/path/to/discord-mcp/dist/index.js
+```
+
+Restart Claude Code, then ask it to run `discord_whoami` to check the connection.
+
+## Configuration
+
+| Variable | Default | What it does |
+|---|---|---|
+| `DISCORD_TOKEN` | *required* | Bot token (no `Bot ` prefix) |
+| `DISCORD_DEFAULT_GUILD` | - | Default server, so tools can omit `guild` |
+| `DISCORD_ALLOW_DESTRUCTIVE` | `false` | Enables ban, kick, timeout and delete tools |
+| `DISCORD_PRIVILEGED_INTENTS` | `true` | Set `false` if you cannot enable intents in the portal |
+| `DISCORD_BATCH_CONCURRENCY` | `4` | Parallel operations per batch |
+| `DISCORD_REQUEST_TIMEOUT_MS` | `15000` | Timeout per Discord request |
+| `DISCORD_MAX_RESPONSE_CHARS` | `25000` | Response size cap |
+| `DISCORD_GATEWAY_IDLE_MS` | `120000` | Idle time before the live connection closes |
+
+## Tools
+
+**Server** - `discord_whoami` `discord_list_guilds` `discord_get_guild` `discord_create_invite`
+
+**Channels** - `discord_list_channels` `discord_create_channel` `discord_edit_channel` `discord_delete_channel`\* `discord_manage_thread` `discord_set_channel_permissions` `discord_reorder_channels`
+
+**Messages** - `discord_send_message` `discord_send_dm` `discord_read_messages` `discord_search_messages` `discord_edit_message` `discord_delete_message`\* `discord_react` `discord_pin_message`
+
+**People** - `discord_list_members` `discord_get_member` `discord_edit_member` `discord_manage_member_roles` `discord_list_roles` `discord_manage_role`\* `discord_reorder_roles`
+
+**Moderation** - `discord_moderate_member`\* `discord_bulk_delete`\* `discord_list_bans` `discord_get_audit_log`
+
+**Live events** - `discord_wait_for_event` `discord_recent_events`
+
+**Batch** - `discord_batch`
+
+\* needs `DISCORD_ALLOW_DESTRUCTIVE=true`, and stays hidden until then
+
+## Batch example
 
 ```json
 {
-  "mcpServers": {
-    "discord": {
-      "command": "npx",
-      "args": ["-y", "--prefer-online", "github:EL4CTEO/discord-mcp"],
-      "env": { "DISCORD_BOT_TOKEN": "YOUR_TOKEN" }
-    }
-  }
+  "operations": [
+    { "tool": "discord_send_message", "args": { "channel": "general", "content": "Deploy done" } },
+    { "tool": "discord_manage_member_roles", "args": { "member": "alice", "add": ["Release"] } }
+  ],
+  "defaults": { "guild": "my server" }
 }
 ```
 
-#### Claude Code (CLI)
+One failure does not stop the rest - every operation reports its own result.
 
-```bash
-claude mcp add discord -s user -e DISCORD_BOT_TOKEN=YOUR_TOKEN -- npx -y github:EL4CTEO/discord-mcp
+## Architecture
+
+```
+src/
+├─ index.ts          stdio entry point
+├─ config.ts         env parsing and validation
+├─ server.ts         MCP wiring
+├─ discord/
+│  ├─ rest.ts        REST client, automatic rate-limit buckets
+│  ├─ gateway.ts     WebSocket - connects lazily, closes when idle
+│  ├─ cache.ts       TTL cache for name lookups
+│  └─ resolve.ts     names -> IDs
+├─ tools/            one module per capability group
+├─ lib/              errors, formatting, concurrency, output fitting, text splitting
+└─ schemas/          shared Zod schemas
 ```
 
----
+REST handles every action, so startup is instant. The WebSocket only opens when a tool needs live events, and closes again after 2 minutes idle.
 
-## First Use
+## Bulk operations
 
-1. `guild` → `list` — find your server's ID
-2. `guild` → `set_default` — persists to disk, call once
-3. `channel` → `list` — resolve channel names/IDs
+Every tool that acts on a thing accepts an **array** wherever it accepts one value:
 
----
+```jsonc
+// one channel
+{ "channel": "general", "content": "hi" }
 
-## Tools (13 total)
+// or fifty, in parallel, from the same tool
+{ "channel": ["general", "announcements", "codes"], "content": "hi" }
+```
 
-| Tool | Actions | Covers |
-|------|---------|--------|
-| `guild` | set_default, list, info, edit | Server selection and settings |
-| `channel` | list, info, create, edit, clone, delete, set_permissions | All channel types incl. forums (tags via `info`/`edit`), categories, permission overwrites |
-| `history` | fetch, get, search, pinned, reactions | Reading messages, message detail incl. attachments and jump URL, substring search, who-reacted |
-| `message` | send, reply, edit, poll, pin, unpin, delete, bulk_delete, react, unreact | Text, rich embeds, replies, polls, pinning, deleting, reactions — works in channels and threads |
-| `dm` | send, reply, edit, delete, history | Direct messages; `user` accepts ID or username |
-| `thread` | create, list, edit | Threads from channels or messages, forum posts with tags, archive/lock |
-| `role` | list, create, edit, delete, assign, remove | Role management by ID or name |
-| `member` | list, get, edit, prune | Member profiles, nicknames + role changes in one call, inactivity pruning (dry-run by default) |
-| `moderate` | kick, ban, unban, timeout, remove_timeout, list_bans, audit_log | Moderation and audit history |
-| `invite` | create, list, delete | Invite links |
-| `webhook` | create, list, delete, send | Webhooks incl. sending with name/avatar override |
-| `automod` | list, create, edit, delete | Keyword/regex/preset/mention-spam rules with block/alert/timeout responses |
-| `bot` | info, set_status | Bot identity, uptime, presence/activity |
+Items are grouped by rate-limit bucket, run in parallel across buckets, and each reports its own result - so one failure never hides the rest:
 
-### Removed in v6
+```
+discord_send_message on 3 items: 2 succeeded, 1 failed.
+```
 
-Analytics tools (`server_analysis`, `channel_analysis`, `user_analysis`, `thread_analysis`, `message_stats`, `role_analysis`, `emoji_usage`, `inactive_members`), scheduled events, emoji/sticker management, `send_typing`, `get_vanity_url` (now in `guild` → `info`), `get_avatar`, `crosspost_message`, and `get_voice_states`. The underlying data is still reachable through `history` and `member` where it matters.
+Use `discord_batch` instead when the calls are *different* tools.
 
----
+## Performance
 
-## Requirements
+- **Warm start**: name caches load while the client connects
+- **Caches stay fresh**: the server's own edits, and live gateway events, update the caches in place, so nothing needs a refetch
+- **Real bulk endpoints**: arrays of message deletes and bans each go out as one request
+- **One request for many role changes**: adding or removing several roles on a member is a single call
+- **Compact output**: JSON has no indentation, and oversized results are trimmed evenly across items instead of cut off at the end
+- **Bucket-aware batching**: calls run in parallel across Discord rate-limit buckets
+- **Cancellable**: when the client cancels a call, waits and batches stop, and long batches report their progress
 
-- Node.js ≥ 18
-- A Discord bot token with the intents above
+## Development
+
+
+```bash
+npm run dev        # watch mode
+npm test           # run tests
+npm run typecheck  # types only
+```
+
+## Notes
+
+- Reading other people's message content needs the **Message Content Intent**.
+- Listing all members needs the **Server Members Intent**.
+- To assign or moderate a role, the bot's own role must sit **above** it in Server Settings → Roles.
+- Bulk delete only works on messages newer than 14 days.
+
+## License
+
+MIT

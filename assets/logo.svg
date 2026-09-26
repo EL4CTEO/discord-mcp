@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Discord MCP">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7983FF"/>
+      <stop offset="1" stop-color="#4752C4"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="60" fill="url(#bg)"/>
+  <!-- Antenna: the agent connection -->
+  <line x1="128" y1="44" x2="128" y2="72" stroke="#fff" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="128" cy="40" r="13" fill="#fff"/>
+  <!-- Chat bubble -->
+  <path d="M82 72h92a28 28 0 0 1 28 28v56a28 28 0 0 1-28 28h-56l-34 26v-26a28 28 0 0 1-30-28v-56a28 28 0 0 1 28-28z" fill="#fff"/>
+  <!-- Bot eyes -->
+  <rect x="94" y="104" width="22" height="38" rx="11" fill="#5865F2"/>
+  <rect x="140" y="104" width="22" height="38" rx="11" fill="#5865F2"/>
+</svg>
