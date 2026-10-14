@@ -5,7 +5,7 @@ import { defineTool } from "./registry.js";
 import type { ToolContext } from "./registry.js";
 import { resolveChannel, plural } from "./util.js";
 import { formatGuild, snowflakeToDate } from "../lib/format.js";
-import { channelRef, detail, guildRef } from "../schemas/common.js";
+import { auditReason, channelRef, detail, guildRef } from "../schemas/common.js";
 import { permissionNames } from "../schemas/permissions.js";
 
 /** Servers whose bot permissions whoami reports; beyond this it would be noise. */
@@ -96,8 +96,9 @@ export const createInvite = defineTool({
   title: "Create an invite link",
   description:
     "Creates an invite link to a channel.\n\n" +
-    "Defaults to a link that never expires and has unlimited uses. Set `max_age_seconds` or `max_uses` " +
-    "to limit it, or `temporary` to grant membership only until the person disconnects.",
+    "Defaults to a link that expires after 24 hours with unlimited uses, like Discord's own default. Set " +
+    "`max_age_seconds` (0 = never expires) or `max_uses` to change that, or `temporary` to grant membership " +
+    "only until the person disconnects.",
   inputSchema: {
     channel: channelRef,
     guild: guildRef.optional(),
@@ -106,11 +107,13 @@ export const createInvite = defineTool({
       .int()
       .min(0)
       .max(604800)
-      .default(0)
-      .describe("Seconds until the invite expires; 0 means never (max 604800 = 7 days)."),
+      // A permanent public link outlives the conversation that asked for it, so
+      // it has to be requested explicitly rather than be the default.
+      .default(86400)
+      .describe("Seconds until the invite expires (default 86400 = 24h); 0 means never (max 604800 = 7 days)."),
     max_uses: z.number().int().min(0).max(100).default(0).describe("Maximum uses; 0 means unlimited."),
     temporary: z.boolean().default(false).describe("Grant temporary membership only."),
-    reason: z.string().max(512).optional(),
+    reason: auditReason,
   },
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   async handler(args, ctx) {
@@ -144,8 +147,8 @@ export const whoAmI = defineTool({
   name: "discord_whoami",
   title: "Show the bot's own identity and setup",
   description:
-    "Reports which bot account the token belongs to, which servers it can reach, and whether " +
-    "destructive actions are enabled.\n\n" +
+    "Reports which bot account the token belongs to, which servers it can reach, and the safety settings: " +
+    "destructive actions, @everyone pings and where files may be uploaded from.\n\n" +
     "Run this first to verify the server is configured correctly, or when a tool behaves unexpectedly.",
   inputSchema: {},
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
@@ -163,6 +166,8 @@ export const whoAmI = defineTool({
         bot_id: me.id,
         servers: guilds.map((g, i) => ({ id: g.id, name: g.name, ...(standing[i] ?? {}) })),
         destructive_actions_enabled: ctx.config.allowDestructive,
+        mass_mentions_enabled: ctx.config.allowMassMentions,
+        upload_dirs: ctx.config.uploadDirs ?? "anywhere",
         privileged_intents: ctx.config.privilegedIntents,
         default_guild: ctx.config.defaultGuild ?? null,
         gateway_connected: ctx.gateway.isConnected,

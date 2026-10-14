@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ToolError } from "../lib/errors.js";
 
 /**
  * Shared argument schemas.
@@ -10,7 +11,7 @@ import { z } from "zod";
 export const guildRef = z
   .string()
   .min(1)
-  .describe("Server name or ID. Optional when the bot is in one server or DISCORD_DEFAULT_GUILD is set.");
+  .describe("Server name or ID. Optional if the bot is in one server or a default is set.");
 
 export const channelRef = z
   .string()
@@ -73,6 +74,40 @@ export const embedSchema = z
 
 export type EmbedInput = z.infer<typeof embedSchema>;
 
+/** Discord's cap on the text of all embeds in one message, added together. */
+export const EMBED_TOTAL_LIMIT = 6000;
+
+/** The characters Discord counts toward the per-message embed total. */
+function embedTextLength(embed: EmbedInput): number {
+  return (
+    (embed.title?.length ?? 0) +
+    (embed.description?.length ?? 0) +
+    (embed.footer?.text.length ?? 0) +
+    (embed.author?.name.length ?? 0) +
+    (embed.fields ?? []).reduce((sum, field) => sum + field.name.length + field.value.length, 0)
+  );
+}
+
+/**
+ * A message's embeds, with the per-message total checked up front. Each embed can
+ * pass its own limits while the set is still refused by Discord at send time.
+ */
+export const embedList = z
+  .array(embedSchema)
+  .max(10)
+  .superRefine((embeds, ctx) => {
+    const total = embeds.reduce((sum, embed) => sum + embedTextLength(embed), 0);
+    if (total > EMBED_TOTAL_LIMIT) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          `Embeds total ${total} characters; Discord allows ${EMBED_TOTAL_LIMIT} across all embeds of one message. ` +
+          "Shorten them or split them across messages.",
+        input: embeds,
+      });
+    }
+  });
+
 /** Converts our friendlier embed input into Discord's wire format. */
 export function toApiEmbed(embed: EmbedInput): Record<string, unknown> {
   const { color, ...rest } = embed;
@@ -85,13 +120,34 @@ export function toApiEmbed(embed: EmbedInput): Record<string, unknown> {
 
 /**
  * Discord's default is to ping every user and role named in the text. That is
- * the wrong default for an agent, so mentions are suppressed unless asked for.
+ * the wrong default for an agent, so mentions are suppressed unless asked for,
+ * and @everyone/@here - which can wake an entire server - need their own,
+ * explicit opt-in on top of ordinary pings.
  */
 export const allowMentions = z
-  .boolean()
+  .union([z.boolean(), z.literal("everyone")])
   .default(false)
-  .describe("Whether @mentions in the content actually ping people. Defaults to false to avoid accidental pings.");
+  .describe(
+    "Whether @mentions in the content actually ping. false (default): nobody is pinged. true: mentioned users " +
+      "and roles are pinged. 'everyone': @everyone and @here ping too.",
+  );
 
-export function mentionPolicy(allow: boolean): Record<string, unknown> {
-  return allow ? { parse: ["users", "roles", "everyone"] } : { parse: [] };
+export type MentionSetting = z.infer<typeof allowMentions>;
+
+/**
+ * The allowed_mentions body for a setting. @everyone/@here also need the
+ * operator's DISCORD_ALLOW_MASS_MENTIONS, because the setting itself is chosen
+ * by the agent, and so can be chosen for it by text it was asked to read.
+ */
+export function mentionPolicy(allow: MentionSetting, allowMass: boolean): Record<string, unknown> {
+  if (allow === "everyone") {
+    if (!allowMass) {
+      throw new ToolError("Refused: pinging @everyone or @here is disabled.", {
+        code: "MASS_MENTION_DISABLED",
+        hint: "Use allow_mentions: true to ping named users and roles, or the operator can set DISCORD_ALLOW_MASS_MENTIONS=true.",
+      });
+    }
+    return { parse: ["users", "roles", "everyone"], replied_user: true };
+  }
+  return allow ? { parse: ["users", "roles"], replied_user: true } : { parse: [], replied_user: false };
 }

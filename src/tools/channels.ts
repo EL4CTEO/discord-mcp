@@ -1,15 +1,15 @@
 import { z } from "zod";
-import { ChannelType, Routes } from "discord-api-types/v10";
+import { ChannelType, PermissionFlagsBits, Routes } from "discord-api-types/v10";
 import type { APIChannel, APIOverwrite, APIThreadChannel } from "discord-api-types/v10";
-import { defineTool } from "./registry.js";
+import { defineTool, errorText } from "./registry.js";
 import type { ToolContext } from "./registry.js";
-import { plural, resolveChannel, resolveGuildChannel, resolveOverwriteTarget } from "./util.js";
+import { plural, resolveGuildChannel, resolveOverwriteTarget } from "./util.js";
 import { channelTypeName, formatChannel, THREAD_TYPES } from "../lib/format.js";
 import type { CompactChannel } from "../lib/format.js";
 import { ToolError } from "../lib/errors.js";
+import { assertMayGrant } from "../lib/guards.js";
 import { auditReason, channelRef, detail, guildRef, messageId } from "../schemas/common.js";
-import { CHANNEL_PERMISSIONS, channelPermissionList, toBitfield } from "../schemas/permissions.js";
-import type { ChannelPermission } from "../schemas/permissions.js";
+import { channelPermissionList, permissionNames, toBitfield } from "../schemas/permissions.js";
 
 /** Friendly names accepted by create/list, mapped to Discord's numeric types. */
 const CREATABLE = {
@@ -19,10 +19,15 @@ const CREATABLE = {
   announcement: ChannelType.GuildAnnouncement,
   stage: ChannelType.GuildStageVoice,
   forum: ChannelType.GuildForum,
+  media: ChannelType.GuildMedia,
 } as const;
 
 const VOICE_TYPES = new Set<ChannelType>([ChannelType.GuildVoice, ChannelType.GuildStageVoice]);
 const FORUM_TYPES = new Set<ChannelType>([ChannelType.GuildForum, ChannelType.GuildMedia]);
+
+/** Limits for plain channels. Forum and media channels allow longer topics; stage channels allow larger user limits. */
+const PLAIN_TOPIC_MAX = 1024;
+const PLAIN_USER_LIMIT_MAX = 99;
 
 const targetType = z
   .enum(["auto", "role", "member"])
@@ -64,7 +69,7 @@ export const listChannels = defineTool({
   inputSchema: {
     guild: guildRef.optional(),
     type: z
-      .enum(["text", "voice", "category", "announcement", "stage", "forum", "all"])
+      .enum(["text", "voice", "category", "announcement", "stage", "forum", "media", "all"])
       .default("all")
       .describe("Restrict results to one channel type."),
     include_threads: z.boolean().default(false).describe("Also list active threads under their parent."),
@@ -123,6 +128,8 @@ async function toOverwrites(
 ): Promise<APIOverwrite[]> {
   return Promise.all(
     specs.map(async (spec) => {
+      // Same gate as discord_set_channel_permissions, or this path would be the way around it.
+      assertMayGrant(toBitfield(spec.allow), ctx.config.allowDestructive, `${spec.target} on the new channel`);
       const target = await resolveOverwriteTarget(ctx, spec.target, spec.target_type, guildId);
       return { id: target.id, type: target.type, allow: toBitfield(spec.allow), deny: toBitfield(spec.deny) };
     }),
@@ -134,7 +141,7 @@ export const createChannel = defineTool({
   bulkArgs: ["name"],
   title: "Create a channel",
   description:
-    "Creates a text, voice, category, announcement, stage or forum channel.\n\n" +
+    "Creates a text, voice, category, announcement, stage, forum or media channel.\n\n" +
     "Nest it with `category` (create the category first if needed). `permissions` sets overwrites in the same " +
     "request - e.g. a private staff channel: [{target:'@everyone', deny:['ViewChannel']}, " +
     "{target:'Moderator', allow:['ViewChannel']}]. Without `permissions` a channel inside a category inherits " +
@@ -142,12 +149,22 @@ export const createChannel = defineTool({
   inputSchema: {
     name: z.string().min(1).max(100).describe("Channel name. Discord lowercases and hyphenates text channel names."),
     guild: guildRef.optional(),
-    type: z.enum(["text", "voice", "category", "announcement", "stage", "forum"]).default("text"),
+    type: z.enum(["text", "voice", "category", "announcement", "stage", "forum", "media"]).default("text"),
     category: channelRef.optional().describe("Parent category to place this channel in."),
-    topic: z.string().max(1024).optional().describe("Channel topic / description."),
+    topic: z
+      .string()
+      .max(4096)
+      .optional()
+      .describe("Channel topic / description. Up to 1024 characters, or 4096 for forum and media channels."),
     nsfw: z.boolean().optional(),
     slowmode_seconds: z.number().int().min(0).max(21600).optional().describe("Per-user rate limit, 0 to disable."),
-    user_limit: z.number().int().min(0).max(99).optional().describe("Voice only: max members, 0 for unlimited."),
+    user_limit: z
+      .number()
+      .int()
+      .min(0)
+      .max(10000)
+      .optional()
+      .describe("Voice only: max members, 0 for unlimited. Up to 99, or 10000 for stage channels."),
     position: z.number().int().min(0).optional(),
     permissions: z.array(overwriteSchema).max(50).optional().describe("Permission overwrites to apply on creation."),
     reason: auditReason,
@@ -156,6 +173,21 @@ export const createChannel = defineTool({
     "Needs Manage Channels; setting permissions also needs Manage Roles, and the bot can only grant permissions it holds.",
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   async handler(args, ctx) {
+    const kind = CREATABLE[args.type];
+    if (args.topic !== undefined && args.topic.length > PLAIN_TOPIC_MAX && !FORUM_TYPES.has(kind)) {
+      throw new ToolError(`A ${args.type} channel's topic is limited to ${PLAIN_TOPIC_MAX} characters.`, {
+        code: "INVALID_ARGS",
+        hint: "Shorten the topic, or create a forum or media channel, which allow 4096.",
+      });
+    }
+    const plainLimit = kind !== ChannelType.GuildStageVoice;
+    if (args.user_limit !== undefined && args.user_limit > PLAIN_USER_LIMIT_MAX && plainLimit) {
+      throw new ToolError(`A ${args.type} channel's user limit is capped at ${PLAIN_USER_LIMIT_MAX}.`, {
+        code: "INVALID_ARGS",
+        hint: "Use a limit of 99 or less, or create a stage channel, which allows up to 10000.",
+      });
+    }
+
     const guildId = await ctx.resolver.guildId(args.guild);
     const [parentId, overwrites] = await Promise.all([
       args.category ? ctx.resolver.channelId(args.category, guildId) : undefined,
@@ -166,7 +198,8 @@ export const createChannel = defineTool({
     // explicit list is layered on top of the category's own overwrites.
     let permissionOverwrites = overwrites;
     if (overwrites && parentId) {
-      const parent = await ctx.resolver.findChannel(guildId, parentId);
+      // Read fresh: a stale copy could carry a category's old, public overwrites into a private channel.
+      const parent = await ctx.rest.get<APIChannel>(Routes.channel(parentId));
       const inherited = parent && "permission_overwrites" in parent ? (parent.permission_overwrites ?? []) : [];
       const explicit = new Set(overwrites.map((o) => o.id));
       permissionOverwrites = [...inherited.filter((o) => !explicit.has(o.id)), ...overwrites];
@@ -205,10 +238,20 @@ export const editChannel = defineTool({
     channel: channelRef,
     guild: guildRef.optional(),
     name: z.string().min(1).max(100).optional(),
-    topic: z.string().max(1024).optional().describe("New topic; '' clears it."),
+    topic: z
+      .string()
+      .max(4096)
+      .optional()
+      .describe("New topic; '' clears it. Up to 1024 characters, or 4096 for forum and media channels."),
     nsfw: z.boolean().optional(),
     slowmode_seconds: z.number().int().min(0).max(21600).optional(),
-    user_limit: z.number().int().min(0).max(99).optional(),
+    user_limit: z
+      .number()
+      .int()
+      .min(0)
+      .max(10000)
+      .optional()
+      .describe("Voice only. Up to 99, or 10000 for stage channels."),
     position: z.number().int().min(0).optional(),
     category: channelRef.nullable().optional().describe("Move under this category, or null for the top level."),
     sync_permissions: z.boolean().optional().describe("When moving, adopt the new category's permissions."),
@@ -221,8 +264,34 @@ export const editChannel = defineTool({
     if (Object.values(changes).every((v) => v === undefined)) {
       throw new ToolError("Nothing to change: pass at least one field to update.", { code: "MISSING_ARG" });
     }
+    if (args.sync_permissions !== undefined && args.category === undefined) {
+      throw new ToolError("`sync_permissions` only applies when moving the channel with `category`.", {
+        code: "MISSING_ARG",
+        hint: "Pass `category` alongside sync_permissions, or drop sync_permissions.",
+      });
+    }
 
     const { guildId, channelId } = await resolveGuildChannel(ctx, args.channel, args.guild);
+
+    // Only a channel the cache knows can be judged here; anything unknown is left to Discord.
+    const needsLargeLimits =
+      (args.topic?.length ?? 0) > PLAIN_TOPIC_MAX || (args.user_limit ?? 0) > PLAIN_USER_LIMIT_MAX;
+    const known = needsLargeLimits ? await ctx.resolver.findChannel(guildId, channelId) : undefined;
+    const plainTopic = known !== undefined && !FORUM_TYPES.has(known.type);
+    const plainLimit = known !== undefined && known.type !== ChannelType.GuildStageVoice;
+    if (plainTopic && args.topic !== undefined && args.topic.length > PLAIN_TOPIC_MAX) {
+      throw new ToolError(`This channel's topic is limited to ${PLAIN_TOPIC_MAX} characters.`, {
+        code: "INVALID_ARGS",
+        hint: "Shorten the topic. Only forum and media channels allow 4096.",
+      });
+    }
+    if (plainLimit && args.user_limit !== undefined && args.user_limit > PLAIN_USER_LIMIT_MAX) {
+      throw new ToolError(`This channel's user limit is capped at ${PLAIN_USER_LIMIT_MAX}.`, {
+        code: "INVALID_ARGS",
+        hint: "Use a limit of 99 or less. Only stage channels allow up to 10000.",
+      });
+    }
+
     const parentId =
       args.category === undefined
         ? undefined
@@ -230,22 +299,54 @@ export const editChannel = defineTool({
           ? null
           : await ctx.resolver.channelId(args.category, guildId);
 
-    const channel = await ctx.rest.patch<APIChannel>(
-      Routes.channel(channelId),
-      {
-        name: args.name,
-        topic: args.topic,
-        nsfw: args.nsfw,
-        rate_limit_per_user: args.slowmode_seconds,
-        user_limit: args.user_limit,
-        position: args.position,
-        parent_id: parentId,
-        lock_permissions: args.sync_permissions,
-      },
-      args.reason,
-    );
+    // Discord's channel PATCH has no lock_permissions field. Syncing overwrites
+    // only happens on the guild positions route, so a sync move goes through it.
+    const syncMove = args.sync_permissions === true && parentId !== undefined;
+    if (syncMove && !ctx.config.allowDestructive) {
+      const current = await ctx.rest.get<APIChannel>(Routes.channel(channelId));
+      if (hidesFromSomeone(current)) {
+        throw new ToolError("Refused: syncing would replace this private channel's overwrites and could expose it.", {
+          code: "EXPOSES_CHANNEL",
+          hint:
+            "Move it without sync_permissions to keep its overwrites, or the operator can set " +
+            "DISCORD_ALLOW_DESTRUCTIVE=true.",
+        });
+      }
+      // Syncing copies the category's grants onto this channel, which is a grant in itself.
+      if (parentId !== null) {
+        const parent = await ctx.rest.get<APIChannel>(Routes.channel(parentId));
+        const own = new Map(overwritesOf(current).map((o) => [o.id, BigInt(o.allow)]));
+        for (const o of overwritesOf(parent)) {
+          assertMayGrant(BigInt(o.allow) & ~(own.get(o.id) ?? 0n), false, `overwrite ${o.id} copied from the category`);
+        }
+      }
+    }
+    if (syncMove) {
+      await ctx.rest.patch(
+        Routes.guildChannels(guildId),
+        [{ id: channelId, parent_id: parentId, lock_permissions: true }],
+        args.reason,
+      );
+    }
 
-    ctx.resolver.upsertChannel(guildId, channel);
+    const body = {
+      name: args.name,
+      topic: args.topic,
+      nsfw: args.nsfw,
+      rate_limit_per_user: args.slowmode_seconds,
+      user_limit: args.user_limit,
+      position: args.position,
+      parent_id: syncMove ? undefined : parentId,
+    };
+    const hasChanges = Object.values(body).some((v) => v !== undefined);
+    // The positions route returns nothing, so a sync move without other edits refetches the channel.
+    const channel = hasChanges
+      ? await ctx.rest.patch<APIChannel>(Routes.channel(channelId), body, args.reason)
+      : await ctx.rest.get<APIChannel>(Routes.channel(channelId));
+
+    // A sync move can renumber sibling channels, which the cache cannot fold in.
+    if (syncMove) ctx.resolver.invalidateChannels(guildId);
+    else ctx.resolver.upsertChannel(guildId, channel);
     return { summary: `Updated channel ${channelId}.`, data: formatChannel(channel, "full") };
   },
 });
@@ -262,10 +363,12 @@ export const deleteChannel = defineTool({
   missingPermissionHint: "Needs the Manage Channels permission (Manage Threads for threads).",
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
   async handler(args, ctx) {
-    const { guildId, channelId } = await resolveGuildChannel(ctx, args.channel, args.guild);
+    const { guildId, channelId } = await resolveGuildChannel(ctx, args.channel, args.guild, { exact: true });
     const deleted = await ctx.rest.delete<APIChannel>(Routes.channel(channelId), args.reason);
 
-    ctx.resolver.removeChannel(guildId, channelId);
+    // Children of a deleted category move to the top level, so their cached parent ids are stale.
+    if (deleted.type === ChannelType.GuildCategory) ctx.resolver.invalidateChannels(guildId);
+    else ctx.resolver.removeChannel(guildId, channelId);
     const name = "name" in deleted && deleted.name ? deleted.name : channelId;
     return { summary: `Deleted ${channelTypeName(deleted.type)} channel "${name}".` };
   },
@@ -352,13 +455,24 @@ export const manageThread = defineTool({
         },
         args.reason,
       );
+      ctx.resolver.invalidateThreads(guildId);
 
       // Text-channel threads start empty; post the opening message into them.
+      // The thread already exists, so a failed post is reported rather than thrown:
+      // a retry would otherwise create a second thread.
       if (!isForum && args.content) {
-        await ctx.rest.post(Routes.channelMessages(thread.id), {
-          content: args.content,
-          allowed_mentions: { parse: [] },
-        });
+        try {
+          await ctx.rest.post(Routes.channelMessages(thread.id), {
+            content: args.content,
+            allowed_mentions: { parse: [] },
+          });
+        } catch (error) {
+          const reason = errorText(error);
+          return {
+            summary: `Created thread "${args.name}" (${thread.id}), but posting the first message failed: ${reason}`,
+            data: formatChannel(thread),
+          };
+        }
       }
 
       return {
@@ -367,7 +481,7 @@ export const manageThread = defineTool({
       };
     }
 
-    const channelId = await resolveChannel(ctx, args.channel, args.guild);
+    const { guildId, channelId } = await resolveGuildChannel(ctx, args.channel, args.guild);
     const state = {
       archive: { archived: true },
       unarchive: { archived: false },
@@ -376,16 +490,22 @@ export const manageThread = defineTool({
     }[args.action];
 
     const thread = await ctx.rest.patch<APIThreadChannel>(Routes.channel(channelId), state, args.reason);
+    ctx.resolver.invalidateThreads(guildId);
     return { summary: `Thread ${channelId}: ${args.action} applied.`, data: formatChannel(thread) };
   },
 });
 
-/** Decodes an overwrite bitfield back into the curated channel permission names. */
-function channelPermissionNames(bits: string): ChannelPermission[] {
-  const value = BigInt(bits);
-  return (Object.keys(CHANNEL_PERMISSIONS) as ChannelPermission[]).filter(
-    (name) => (value & CHANNEL_PERMISSIONS[name]) !== 0n,
-  );
+function overwritesOf(channel: APIChannel | undefined): APIOverwrite[] {
+  return channel && "permission_overwrites" in channel ? (channel.permission_overwrites ?? []) : [];
+}
+
+/**
+ * True when some overwrite on the channel denies View Channel, i.e. it is
+ * private to someone. Only the channel's own overwrites count: Discord copies
+ * a category's overwrites on sync, it does not inherit them at runtime.
+ */
+function hidesFromSomeone(channel: APIChannel | undefined): boolean {
+  return overwritesOf(channel).some((o) => (BigInt(o.deny) & PermissionFlagsBits.ViewChannel) !== 0n);
 }
 
 export const setChannelPermissions = defineTool({
@@ -432,6 +552,37 @@ export const setChannelPermissions = defineTool({
     const target = await resolveOverwriteTarget(ctx, args.target, args.target_type, guildId);
     const route = Routes.channelPermission(channelId, target.id);
 
+    const channel = await ctx.rest.get<APIChannel>(Routes.channel(channelId));
+    const existing =
+      "permission_overwrites" in channel ? channel.permission_overwrites?.find((o) => o.id === target.id) : undefined;
+
+    // Bitfields are merged as bigints, so bits the curated list does not name survive a merge.
+    let allowBits = BigInt(toBitfield(args.allow));
+    let denyBits = BigInt(toBitfield(args.deny));
+    if (args.mode === "reset") {
+      allowBits = 0n;
+      denyBits = 0n;
+    } else if (args.mode === "merge" && existing) {
+      // Anything newly allowed stops being denied, and vice versa.
+      allowBits = (BigInt(existing.allow) & ~denyBits) | allowBits;
+      denyBits = (BigInt(existing.deny) & ~allowBits) | denyBits;
+    }
+
+    // Grants of admin-grade permissions, and lifting the deny that keeps a
+    // channel private, are what an injected instruction would ask for, so both
+    // sit behind the destructive switch. Ordinary locks and unlocks do not.
+    const alreadyAllowed = existing ? BigInt(existing.allow) : 0n;
+    assertMayGrant(allowBits & ~alreadyAllowed, ctx.config.allowDestructive, `${args.target} on this channel`);
+    const wasHidden = existing !== undefined && (BigInt(existing.deny) & PermissionFlagsBits.ViewChannel) !== 0n;
+    if (wasHidden && (denyBits & PermissionFlagsBits.ViewChannel) === 0n && !ctx.config.allowDestructive) {
+      throw new ToolError(`Refused: this would let ${args.target} see a channel currently hidden from them.`, {
+        code: "EXPOSES_CHANNEL",
+        hint:
+          "Exposing a private channel is gated like other destructive actions. The operator can set " +
+          "DISCORD_ALLOW_DESTRUCTIVE=true, or change it by hand in the channel settings.",
+      });
+    }
+
     if (args.mode === "reset") {
       await ctx.rest.delete(route, args.reason);
       ctx.resolver.invalidateChannels(guildId);
@@ -441,25 +592,9 @@ export const setChannelPermissions = defineTool({
       };
     }
 
-    let allow = new Set<ChannelPermission>(args.allow ?? []);
-    let deny = new Set<ChannelPermission>(args.deny ?? []);
-
-    if (args.mode === "merge") {
-      const channel = await ctx.rest.get<APIChannel>(Routes.channel(channelId));
-      const existing =
-        "permission_overwrites" in channel ? channel.permission_overwrites?.find((o) => o.id === target.id) : undefined;
-      if (existing) {
-        // Anything newly allowed stops being denied, and vice versa.
-        const keptAllow = channelPermissionNames(existing.allow).filter((p) => !deny.has(p));
-        const keptDeny = channelPermissionNames(existing.deny).filter((p) => !allow.has(p));
-        allow = new Set([...keptAllow, ...allow]);
-        deny = new Set([...keptDeny, ...deny]);
-      }
-    }
-
     await ctx.rest.put(
       route,
-      { type: target.type, allow: toBitfield([...allow]), deny: toBitfield([...deny]) },
+      { type: target.type, allow: allowBits.toString(), deny: denyBits.toString() },
       args.reason,
     );
     ctx.resolver.invalidateChannels(guildId);
@@ -471,7 +606,13 @@ export const setChannelPermissions = defineTool({
 
     return {
       summary: `On channel ${channelId}, ${args.target}: ${parts.join("; ")}.`,
-      data: { channel_id: channelId, target: args.target, target_id: target.id, allow: [...allow], deny: [...deny] },
+      data: {
+        channel_id: channelId,
+        target: args.target,
+        target_id: target.id,
+        allow: permissionNames(allowBits),
+        deny: permissionNames(denyBits),
+      },
     };
   },
 });
@@ -551,7 +692,12 @@ export const reorderChannels = defineTool({
     const noun = categories > 0 ? ["category", "categories"] : ["channel", "channels"];
     return {
       summary: `Reordered ${plural(ids.length, noun[0] as string, noun[1])}, top to bottom (${plural(changes.length, "position")} changed).`,
-      data: args.order.map((name, index) => ({ position: index, channel: name })),
+      // The real slot each channel landed in, which can differ from where it was listed.
+      data: ids.map((id) => {
+        const channel = byId.get(id);
+        const name = channel && "name" in channel && channel.name ? channel.name : id;
+        return { position: layout.indexOf(id), channel: name };
+      }),
     };
   },
 });

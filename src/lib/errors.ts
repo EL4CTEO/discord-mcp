@@ -138,9 +138,11 @@ export function normalizeError(error: unknown, context: string): ToolError {
 
   if (error instanceof Error) {
     if (error.name === "AbortError" || error.name === "TimeoutError") {
-      return new ToolError(`Could not ${context}: the request to Discord timed out.`, {
+      // @discordjs/rest reports its own timeout as an abort too, so the two
+      // cannot be told apart here; the message covers both.
+      return new ToolError(`Could not ${context}: the request was cancelled or timed out.`, {
         code: "TIMEOUT",
-        hint: "Discord may be slow. Retry, or raise DISCORD_REQUEST_TIMEOUT_MS.",
+        hint: "If it was not cancelled, Discord may be slow: retry, or raise DISCORD_REQUEST_TIMEOUT_MS.",
         cause: error,
       });
     }

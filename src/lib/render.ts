@@ -1,3 +1,4 @@
+import { clip } from "./format.js";
 /**
  * Shrinks arbitrary JSON data until it serialises within a character budget.
  *
@@ -132,6 +133,14 @@ function waterLevel(sizes: readonly number[], available: number): number {
   }
 
   return Number.POSITIVE_INFINITY;
+}
+
+/**
+ * Caps a one-line summary at a quarter of the response budget. The summary is
+ * sent ahead of the data, so an unbounded one would otherwise eat the data share.
+ */
+export function clipSummary(summary: string, maxChars: number): string {
+  return clip(summary, Math.floor(maxChars / 4));
 }
 
 /** Human note describing what fitting removed, or undefined when nothing was. */

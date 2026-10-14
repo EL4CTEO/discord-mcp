@@ -6,6 +6,7 @@ import * as roles from "./roles.js";
 import * as moderation from "./moderation.js";
 import * as guild from "./guild.js";
 import * as events from "./events.js";
+import * as community from "./community.js";
 import { batch } from "./batch.js";
 
 /**
@@ -36,6 +37,7 @@ export const allTools: readonly AnyTool[] = [
   messages.deleteMessage,
   messages.reactToMessage,
   messages.pinMessage,
+  messages.managePoll,
 
   members.listMembers,
   members.getMember,
@@ -50,8 +52,12 @@ export const allTools: readonly AnyTool[] = [
   moderation.bulkDelete,
   moderation.listBans,
   moderation.getAuditLog,
+  community.manageAutomod,
 
   guild.createInvite,
+  community.manageInvites,
+  community.manageScheduledEvents,
+  community.manageEmojis,
 
   events.waitForEvent,
   events.recentEvents,

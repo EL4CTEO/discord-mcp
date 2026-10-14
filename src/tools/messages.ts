@@ -1,9 +1,13 @@
-import { basename } from "node:path";
-import { readFile, stat } from "node:fs/promises";
 import { z } from "zod";
-import { ChannelType, MessageFlags, Routes } from "discord-api-types/v10";
-import type { APIMessage, APIUser, RESTGetAPIChannelMessagesPinsResult } from "discord-api-types/v10";
-import type { RawFile } from "@discordjs/rest";
+import { DiscordAPIError } from "@discordjs/rest";
+import { ChannelType, MessageFlags, MessageReferenceType, Routes } from "discord-api-types/v10";
+import type {
+  APIChannel,
+  APIMessage,
+  APIUser,
+  RESTGetAPIChannelMessagesPinsResult,
+  RESTGetAPIPollAnswerVotersResult,
+} from "discord-api-types/v10";
 import { defineTool, errorText } from "./registry.js";
 import type { BulkItem, ToolContext } from "./registry.js";
 import {
@@ -14,24 +18,25 @@ import {
   resolveChannel,
   resolveEmoji,
 } from "./util.js";
-import { formatMessage, formatUser, searchableText, snowflakeMs } from "../lib/format.js";
+import { formatMessage, formatPoll, formatUser, searchableText, snowflakeMs } from "../lib/format.js";
 import type { CompactMessage } from "../lib/format.js";
 import { ToolError } from "../lib/errors.js";
 import { mapWithConcurrency } from "../lib/limiter.js";
 import { MESSAGE_LIMIT, splitMessage } from "../lib/text.js";
+import { loadUploads } from "../lib/upload.js";
 import { isSnowflake } from "../discord/resolve.js";
 import {
   allowMentions,
   channelRef,
   detail,
-  embedSchema,
+  embedList,
   guildRef,
   memberRef,
   mentionPolicy,
   messageId,
   toApiEmbed,
 } from "../schemas/common.js";
-import type { EmbedInput } from "../schemas/common.js";
+import type { EmbedInput, MentionSetting } from "../schemas/common.js";
 
 /** Channel types that actually hold readable message history. */
 const TEXTUAL_TYPES = new Set<ChannelType>([
@@ -49,16 +54,25 @@ export const BULK_DELETE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 /** Leeway so a message that ages past 14 days mid-request is not sent to the bulk route. */
 const BULK_DELETE_MARGIN_MS = 60_000;
 
-/** Sanity cap on one upload; Discord enforces the real (boost-dependent) limit. */
-const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
-
 /** Long text is split into at most this many messages. */
 const MAX_PARTS = 10;
 
+/** Largest page Discord returns for user lists (reactions, poll voters). */
+const USER_PAGE = 100;
+
+/** Most users one call will list; beyond this the caller is told the list is capped. */
+const USER_LIST_CAP = 1000;
+
+/** Channels scanned by a search that names none: the most recently active ones. */
+const SEARCH_DEFAULT_CHANNELS = 50;
+
+/** Bulk-delete failures Discord pins on one message, so retrying ids one by one can isolate it. */
+const PER_ID_DELETE_CODES = new Set<number>([10008, 50034, 50035]);
+
 const fileSchema = z
   .object({
-    path: z.string().min(1).optional().describe("Local file path to upload."),
-    url: z.url().optional().describe("http(s) URL to download and re-upload."),
+    path: z.string().min(1).optional().describe("Absolute local file path to upload (within the permitted upload folders)."),
+    url: z.url({ protocol: /^https?$/ }).optional().describe("Public http(s) URL to download and re-upload."),
     name: z.string().min(1).max(200).optional().describe("File name shown in Discord. Defaults to the source name."),
     spoiler: z.boolean().optional().describe("Blur the attachment until clicked."),
   })
@@ -84,7 +98,7 @@ interface PostInput {
   files?: FileInput[] | undefined;
   poll?: PollInput | undefined;
   reply_to?: string | undefined;
-  allow_mentions: boolean;
+  allow_mentions: MentionSetting;
   silent: boolean;
   suppress_embeds?: boolean | undefined;
 }
@@ -98,48 +112,13 @@ const postShape = {
       `Message text. Over ${MESSAGE_LIMIT} characters it is split into several messages at paragraph/line ` +
         "boundaries, keeping code blocks intact.",
     ),
-  embeds: z.array(embedSchema).max(10).optional().describe("Up to 10 rich embeds."),
+  embeds: embedList.optional().describe("Up to 10 rich embeds, at most 6000 characters of text across all of them."),
   files: z.array(fileSchema).max(10).optional().describe("Up to 10 attachments, from local paths or URLs."),
   poll: pollSchema.optional(),
   allow_mentions: allowMentions,
   silent: z.boolean().default(false).describe("Send without triggering a push notification."),
   suppress_embeds: z.boolean().optional().describe("Hide link previews."),
 };
-
-async function loadFile(file: FileInput): Promise<RawFile> {
-  let data: Buffer;
-  let name: string;
-
-  if (file.path !== undefined) {
-    const info = await stat(file.path).catch(() => undefined);
-    if (!info?.isFile()) {
-      throw new ToolError(`No file at "${file.path}".`, { code: "FILE_NOT_FOUND", hint: "Pass an absolute path." });
-    }
-    if (info.size > MAX_UPLOAD_BYTES) {
-      throw new ToolError(`"${file.path}" is too large to upload (${Math.round(info.size / 1048576)} MB).`, {
-        code: "FILE_TOO_LARGE",
-      });
-    }
-    data = await readFile(file.path);
-    name = basename(file.path);
-  } else {
-    const url = file.url as string;
-    const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-    if (!response.ok) {
-      throw new ToolError(`Downloading ${url} failed with HTTP ${response.status}.`, { code: "DOWNLOAD_FAILED" });
-    }
-    const declared = Number(response.headers.get("content-length") ?? 0);
-    if (declared > MAX_UPLOAD_BYTES) {
-      throw new ToolError(`${url} is too large to upload.`, { code: "FILE_TOO_LARGE" });
-    }
-    data = Buffer.from(await response.arrayBuffer());
-    name = decodeURIComponent(basename(new URL(url).pathname)) || "file";
-  }
-
-  name = file.name ?? name;
-  if (file.spoiler && !name.startsWith("SPOILER_")) name = `SPOILER_${name}`;
-  return { name, data };
-}
 
 function toApiPoll(poll: PollInput): Record<string, unknown> {
   return {
@@ -164,6 +143,13 @@ async function postMessage(ctx: ToolContext, channelId: string, input: PostInput
     });
   }
 
+  if (input.suppress_embeds && input.embeds?.length) {
+    throw new ToolError("suppress_embeds hides every embed on the message, including the ones being sent.", {
+      code: "CONFLICTING_ARGS",
+      hint: "Drop suppress_embeds to send these embeds, or drop embeds to hide link previews.",
+    });
+  }
+
   const parts = input.content ? splitMessage(input.content) : [""];
   if (parts.length > MAX_PARTS) {
     throw new ToolError(`The text would need ${parts.length} messages; the maximum is ${MAX_PARTS}.`, {
@@ -172,7 +158,10 @@ async function postMessage(ctx: ToolContext, channelId: string, input: PostInput
     });
   }
 
-  const files = input.files?.length ? await Promise.all(input.files.map(loadFile)) : undefined;
+  // Settled before any file is read or message sent, so a refused setting costs nothing.
+  const allowedMentions = mentionPolicy(input.allow_mentions, ctx.config.allowMassMentions);
+  const policy = { roots: ctx.config.uploadDirs, signal: ctx.signal, secrets: [ctx.config.token] };
+  const files = input.files?.length ? await loadUploads(input.files, policy) : undefined;
 
   let flags = 0;
   if (input.silent) flags |= MessageFlags.SuppressNotifications;
@@ -183,20 +172,36 @@ async function postMessage(ctx: ToolContext, channelId: string, input: PostInput
     const first = index === 0;
     const last = index === parts.length - 1;
 
-    const message = await ctx.rest.post<APIMessage>(
-      Routes.channelMessages(channelId),
-      {
-        content: part || undefined,
-        embeds: last ? input.embeds?.map(toApiEmbed) : undefined,
-        poll: last && input.poll ? toApiPoll(input.poll) : undefined,
-        allowed_mentions: mentionPolicy(input.allow_mentions),
-        message_reference:
-          first && input.reply_to ? { message_id: input.reply_to, fail_if_not_exists: false } : undefined,
-        flags: flags || undefined,
-      },
-      undefined,
-      last ? files : undefined,
-    );
+    let message: APIMessage;
+    try {
+      message = await ctx.rest.post<APIMessage>(
+        Routes.channelMessages(channelId),
+        {
+          content: part || undefined,
+          embeds: last ? input.embeds?.map(toApiEmbed) : undefined,
+          poll: last && input.poll ? toApiPoll(input.poll) : undefined,
+          allowed_mentions: allowedMentions,
+          message_reference:
+            first && input.reply_to ? { message_id: input.reply_to, fail_if_not_exists: false } : undefined,
+          flags: flags || undefined,
+        },
+        undefined,
+        last ? files : undefined,
+      );
+    } catch (error) {
+      // Earlier parts are already live. Throwing without their ids would invite a
+      // resend that duplicates them, so the ids go back with the error.
+      if (sent.length === 0) throw error;
+      throw new ToolError(
+        `Sent ${sent.length} of ${parts.length} parts, then failed: ${errorText(error)}. ` +
+          `Sent message ids: ${sent.map((m) => m.id).join(", ")}.`,
+        {
+          code: "PARTIAL_SEND",
+          hint: "Do not resend the whole message; send only the remaining text.",
+          cause: error,
+        },
+      );
+    }
     sent.push(message);
   }
 
@@ -219,7 +224,8 @@ export const sendMessage = defineTool({
   bulkArgs: ["channel"],
   title: "Send a Discord message",
   description:
-    "Posts a message to a channel or thread: text, embeds, file uploads, polls and replies.\n\n" +
+    "Posts a message to a channel or thread: text, embeds, file uploads, polls and replies, or forwards an " +
+    "existing message (forward, on its own).\n\n" +
     "@mentions do NOT ping anyone unless allow_mentions is true, so names are safe in text. " +
     "Long text is split automatically. Returns the created message and its id.",
   inputSchema: {
@@ -227,10 +233,48 @@ export const sendMessage = defineTool({
     guild: guildRef.optional(),
     ...postShape,
     reply_to: messageId.optional().describe("Message ID to reply to."),
+    forward: z
+      .object({ channel: channelRef, message_id: messageId })
+      .optional()
+      .describe("Forward this message (from channel) into the target channel. Cannot be combined with other content."),
   },
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   async handler(args, ctx) {
     const channelId = await resolveChannel(ctx, args.channel, args.guild);
+
+    if (args.forward) {
+      // Discord takes only a reference for a forward, so anything else would be dropped silently.
+      const hasOther =
+        args.content !== undefined ||
+        (args.embeds?.length ?? 0) > 0 ||
+        (args.files?.length ?? 0) > 0 ||
+        args.poll !== undefined ||
+        args.reply_to !== undefined;
+      if (hasOther) {
+        throw new ToolError(
+          "A forward carries the original message as is: content, embeds, files, poll and reply_to cannot be combined with forward.",
+          {
+            code: "CONFLICTING_ARGS",
+            hint: "Forward on its own, then send your own text as a separate message.",
+          },
+        );
+      }
+
+      const sourceId = await resolveChannel(ctx, args.forward.channel, args.guild);
+      const message = await ctx.rest.post<APIMessage>(Routes.channelMessages(channelId), {
+        message_reference: {
+          type: MessageReferenceType.Forward,
+          message_id: args.forward.message_id,
+          channel_id: sourceId,
+        },
+        flags: args.silent ? MessageFlags.SuppressNotifications : undefined,
+      });
+      return {
+        summary: `Forwarded message ${args.forward.message_id} from channel ${sourceId} to channel ${channelId} as ${message.id}.`,
+        data: formatMessage(message),
+      };
+    }
+
     const messages = await postMessage(ctx, channelId, args);
     return sentOutcome(messages, `channel ${channelId}`);
   },
@@ -284,6 +328,13 @@ export const readMessages = defineTool({
   },
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   async handler(args, ctx) {
+    if (args.around !== undefined && args.limit > 100) {
+      throw new ToolError(`limit is ${args.limit}, which cannot be combined with around.`, {
+        code: "INVALID_ARGS",
+        hint: "around returns at most 100 messages",
+      });
+    }
+
     const channelId = await resolveChannel(ctx, args.channel, args.guild);
 
     const [fetched, authorId] = await Promise.all([
@@ -321,7 +372,7 @@ export const editMessage = defineTool({
     guild: guildRef.optional(),
     message_id: messageId,
     content: z.string().max(MESSAGE_LIMIT).optional().describe("Replacement text."),
-    embeds: z.array(embedSchema).max(10).optional().describe("Replacement embeds; [] removes all."),
+    embeds: embedList.optional().describe("Replacement embeds; [] removes all."),
     allow_mentions: allowMentions,
   },
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
@@ -334,7 +385,7 @@ export const editMessage = defineTool({
     const message = await ctx.rest.patch<APIMessage>(Routes.channelMessage(channelId, args.message_id), {
       content: args.content,
       embeds: args.embeds?.map(toApiEmbed),
-      allowed_mentions: mentionPolicy(args.allow_mentions),
+      allowed_mentions: mentionPolicy(args.allow_mentions, ctx.config.allowMassMentions),
     });
 
     return { summary: `Edited message ${message.id}.`, data: formatMessage(message) };
@@ -347,10 +398,16 @@ function bulkDeletable(id: string, now = Date.now()): boolean {
   return created !== undefined && created > now - BULK_DELETE_MAX_AGE_MS + BULK_DELETE_MARGIN_MS;
 }
 
+/** True when a failed bulk request was refused because of one of its ids. */
+function isPerIdFailure(error: unknown): boolean {
+  return error instanceof DiscordAPIError && typeof error.code === "number" && PER_ID_DELETE_CODES.has(error.code);
+}
+
 /**
  * Deletes a set of messages in as few requests as possible: one bulk request
  * per 100 recent messages, and individual deletes only for those older than
- * 14 days (or when a bulk request is refused). Returns the ids that failed.
+ * 14 days (or when Discord names one of a chunk's ids as the problem). Returns
+ * the ids that failed.
  */
 export async function deleteMessages(
   ctx: ToolContext,
@@ -373,9 +430,11 @@ export async function deleteMessages(
       }
       try {
         await ctx.rest.post(Routes.channelBulkDelete(channelId), { messages: chunk }, reason);
-      } catch {
-        // One bad id fails the whole chunk; retry individually for exact per-message results.
-        single.push(...chunk);
+      } catch (error) {
+        // A permission or rate-limit refusal would fail every retry the same way,
+        // so only an id-specific refusal is retried one by one.
+        if (isPerIdFailure(error)) single.push(...chunk);
+        else for (const id of chunk) failures.set(id, error);
       }
     }
   }
@@ -413,7 +472,7 @@ export const deleteMessage = defineTool({
   async bulkHandler(args, bulkArg, ids, ctx) {
     if (bulkArg !== "message_id" || ids.length < 2) return undefined;
 
-    const channelId = await resolveChannel(ctx, args.channel, args.guild);
+    const channelId = await resolveChannel(ctx, args.channel, args.guild, { exact: true });
     const failures = await deleteMessages(ctx, channelId, ids, args.reason);
 
     return ids.map<BulkItem>((id) => {
@@ -424,7 +483,7 @@ export const deleteMessage = defineTool({
     });
   },
   async handler(args, ctx) {
-    const channelId = await resolveChannel(ctx, args.channel, args.guild);
+    const channelId = await resolveChannel(ctx, args.channel, args.guild, { exact: true });
     await ctx.rest.delete(Routes.channelMessage(channelId, args.message_id), args.reason);
     return { summary: `Deleted message ${args.message_id} from channel ${channelId}.` };
   },
@@ -454,11 +513,23 @@ export const reactToMessage = defineTool({
     const emoji = encodeURIComponent(await resolveEmoji(ctx, args.emoji, channelId, args.guild));
 
     if (args.action === "list") {
-      const users = await ctx.rest.get<APIUser[]>(Routes.channelMessageReaction(channelId, args.message_id, emoji), {
-        limit: 100,
-      });
+      const route = Routes.channelMessageReaction(channelId, args.message_id, emoji);
+      const users: APIUser[] = [];
+      let after: string | undefined;
+      let capped = false;
+      for (;;) {
+        const page = await ctx.rest.get<APIUser[]>(route, { limit: USER_PAGE, after });
+        users.push(...page);
+        if (page.length < USER_PAGE) break;
+        if (users.length >= USER_LIST_CAP) {
+          capped = true;
+          break;
+        }
+        after = page[page.length - 1]?.id;
+      }
+      const note = capped ? ` (capped at ${USER_LIST_CAP}; more users may have reacted)` : "";
       return {
-        summary: `${plural(users.length, "user")} reacted with ${args.emoji} on ${args.message_id}.`,
+        summary: `${plural(users.length, "user")} reacted with ${args.emoji} on ${args.message_id}${note}.`,
         data: users.map(formatUser),
       };
     }
@@ -516,6 +587,126 @@ export const pinMessage = defineTool({
   },
 });
 
+export const managePoll = defineTool({
+  name: "discord_manage_poll",
+  missingPermissionHint:
+    "Reading a poll needs View Channel and Read Message History in its channel. Ending one only works for polls " +
+    "the bot posted itself: Discord refuses to end another user's poll.",
+  title: "Read, list voters of, or end a poll",
+  description:
+    "Works on the poll attached to a message. action='results' (default) returns the question, each answer's " +
+    "vote count and whether the poll is finalized. 'voters' lists who chose answer_id, up to limit. 'end' closes " +
+    "a poll early so no more votes count; only polls the bot posted itself can be ended.",
+  inputSchema: {
+    channel: channelRef,
+    guild: guildRef.optional(),
+    message_id: messageId,
+    action: z.enum(["results", "voters", "end"]).default("results"),
+    answer_id: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("Answer to list voters for. Required for 'voters'; the ids come from 'results'."),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(USER_LIST_CAP)
+      .default(100)
+      .describe("How many voters to return for 'voters' (1-1000)."),
+  },
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  async handler(args, ctx) {
+    const channelId = await resolveChannel(ctx, args.channel, args.guild);
+
+    if (args.action === "end") {
+      const message = await ctx.rest.post<APIMessage>(Routes.expirePoll(channelId, args.message_id));
+      return {
+        summary: `Ended the poll on message ${args.message_id}; no more votes will count.`,
+        data: formatMessage(message),
+      };
+    }
+
+    if (args.action === "voters") {
+      if (args.answer_id === undefined) {
+        throw new ToolError('answer_id is required when action is "voters".', {
+          code: "MISSING_ARG",
+          hint: "Call with action='results' to find the answer ids.",
+        });
+      }
+
+      const voters: APIUser[] = [];
+      let after: string | undefined;
+      for (;;) {
+        const want = Math.min(USER_PAGE, args.limit - voters.length);
+        const page = await ctx.rest.get<RESTGetAPIPollAnswerVotersResult>(
+          Routes.pollAnswerVoters(channelId, args.message_id, args.answer_id),
+          { limit: want, after },
+        );
+        voters.push(...page.users);
+        if (page.users.length < want || voters.length >= args.limit) break;
+        after = page.users[page.users.length - 1]?.id;
+      }
+
+      const note = voters.length >= args.limit ? ` (stopped at limit ${args.limit}; more may exist)` : "";
+      return {
+        summary: `${plural(voters.length, "voter")} for answer ${args.answer_id} on message ${args.message_id}${note}.`,
+        data: voters.map(formatUser),
+      };
+    }
+
+    const message = await ctx.rest.get<APIMessage>(Routes.channelMessage(channelId, args.message_id));
+    if (!message.poll) {
+      throw new ToolError(`Message ${args.message_id} has no poll.`, {
+        code: "NOT_FOUND",
+        hint: "Pass the ID of the message that shows the poll.",
+      });
+    }
+
+    const poll = formatPoll(message.poll);
+    const counted = poll.answers.some((a) => a.votes !== undefined);
+    const votes = poll.answers.reduce((sum, a) => sum + (a.votes ?? 0), 0);
+    const tally = counted ? plural(votes, "vote") + " counted" : "vote counts not returned";
+    return {
+      summary: `Poll on message ${args.message_id}: ${tally}${poll.finalized ? ", finalized" : ""}.`,
+      data: poll,
+    };
+  },
+});
+
+/** Newest activity first; a channel that has never had a message goes last. */
+function byRecentActivity(a: APIChannel, b: APIChannel): number {
+  const latestA = lastMessageId(a);
+  const latestB = lastMessageId(b);
+  if (latestA === undefined || latestB === undefined) {
+    return Number(latestA === undefined) - Number(latestB === undefined);
+  }
+  return compareSnowflakes(latestB, latestA);
+}
+
+function lastMessageId(channel: APIChannel): string | undefined {
+  return "last_message_id" in channel ? (channel.last_message_id ?? undefined) : undefined;
+}
+
+/**
+ * The channels a search scans when none are named: the most recently active
+ * text channels and threads, up to SEARCH_DEFAULT_CHANNELS. Scanning every
+ * channel of a large server costs a request each and runs into rate limits.
+ */
+async function defaultSearchTargets(
+  ctx: ToolContext,
+  guildId: string,
+): Promise<{ targets: string[]; skipped: number }> {
+  const [channels, threads] = await Promise.all([
+    ctx.resolver.channels(guildId),
+    ctx.resolver.threads(guildId).catch(() => []),
+  ]);
+  const textual = [...channels, ...threads].filter((c) => TEXTUAL_TYPES.has(c.type)).sort(byRecentActivity);
+  const targets = textual.slice(0, SEARCH_DEFAULT_CHANNELS).map((c) => c.id);
+  return { targets, skipped: textual.length - targets.length };
+}
+
 export const searchMessages = defineTool({
   name: "discord_search_messages",
   title: "Search recent messages",
@@ -530,7 +721,7 @@ export const searchMessages = defineTool({
       .array(channelRef)
       .max(25)
       .optional()
-      .describe("Channels to scan. Defaults to every text channel and active thread."),
+      .describe("Channels to scan. Defaults to the 50 most recently active text channels and threads."),
     from_author: memberRef.optional().describe("Only match messages by this member."),
     per_channel_limit: z.number().int().min(1).max(500).default(100),
     max_results: z.number().int().min(1).max(100).default(25),
@@ -540,14 +731,16 @@ export const searchMessages = defineTool({
   async handler(args, ctx) {
     const guildId = await ctx.resolver.guildId(args.guild);
 
-    const [targets, authorId] = await Promise.all([
+    const [scope, authorId] = await Promise.all([
       args.channels
-        ? Promise.all(args.channels.map((c) => ctx.resolver.channelId(c, guildId)))
-        : Promise.all([ctx.resolver.channels(guildId), ctx.resolver.threads(guildId).catch(() => [])]).then(
-            ([channels, threads]) => [...channels, ...threads].filter((c) => TEXTUAL_TYPES.has(c.type)).map((c) => c.id),
-          ),
+        ? Promise.all(args.channels.map((c) => ctx.resolver.channelId(c, guildId))).then((targets) => ({
+            targets,
+            skipped: 0,
+          }))
+        : defaultSearchTargets(ctx, guildId),
       args.from_author ? ctx.resolver.memberId(args.from_author, guildId) : undefined,
     ]);
+    const { targets, skipped } = scope;
 
     const needle = args.query.toLowerCase();
 
@@ -575,11 +768,13 @@ export const searchMessages = defineTool({
     hits.sort((a, b) => compareSnowflakes(b.id, a.id));
     const trimmed = hits.slice(0, args.max_results);
 
-    const skipped = unreadable > 0 ? ` ${plural(unreadable, "channel")} could not be read and were skipped.` : "";
+    const unreadableNote = unreadable > 0 ? ` ${plural(unreadable, "channel")} could not be read and were skipped.` : "";
+    const unsearchedNote =
+      skipped > 0 ? ` ${plural(skipped, "less active channel")} not searched; pass channels to search them.` : "";
     return {
       summary:
         `Found ${plural(hits.length, "match", "matches")} for "${args.query}" across ` +
-        `${plural(targets.length, "channel")}; showing ${trimmed.length}.${skipped}`,
+        `${plural(targets.length, "channel")}; showing ${trimmed.length}.${unreadableNote}${unsearchedNote}`,
       data: trimmed,
     };
   },

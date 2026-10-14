@@ -16,15 +16,33 @@ import { TtlCache } from "./cache.js";
 import type { DiscordRest } from "./rest.js";
 
 const SNOWFLAKE = /^\d{17,20}$/;
-const MENTION = /^<[@#][!&]?(\d{17,20})>$/;
+/** Captures the sigil (@ or #), the optional modifier (! for nick mentions, & for roles) and the ID. */
+const MENTION = /^<([@#])(!|&)?(\d{17,20})>$/;
 const EVERYONE = /^@?everyone$/i;
 
 /** Discord caps GET /users/@me/guilds at 200 per page. */
 const GUILD_PAGE = 200;
+/**
+ * Discord allows up to 1000 results from member search. 100 keeps responses
+ * small while still being large enough that a full page is a useful signal.
+ */
+const MEMBER_SEARCH_LIMIT = 100;
+
+const UINT64_LIMIT = 2n ** 64n;
 
 /** True when the string is already a Discord ID and needs no lookup. */
 export function isSnowflake(value: string): boolean {
-  return SNOWFLAKE.test(value);
+  // Snowflakes are unsigned 64-bit integers, so a 20-digit string can still be out of range.
+  return SNOWFLAKE.test(value) && BigInt(value) < UINT64_LIMIT;
+}
+
+/** What a mention refers to, so a tool can refuse a mention of the wrong kind. */
+type MentionKind = "user" | "role" | "channel";
+
+interface ParsedRef {
+  id?: string;
+  name: string;
+  mention?: MentionKind;
 }
 
 /**
@@ -32,12 +50,18 @@ export function isSnowflake(value: string): boolean {
  * a raw ID, a mention (`<#123>`), or a decorated name (`#general`, `@Mods`).
  * Returns an ID directly when one is recognisable, otherwise the bare name.
  */
-function parseRef(input: string): { id?: string; name: string } {
+function parseRef(input: string): ParsedRef {
   const trimmed = input.trim();
 
   const mention = MENTION.exec(trimmed);
-  if (mention?.[1]) return { id: mention[1], name: trimmed };
-  if (SNOWFLAKE.test(trimmed)) return { id: trimmed, name: trimmed };
+  if (mention) {
+    const [, sigil, modifier, id] = mention;
+    if (id && isSnowflake(id)) {
+      const kind: MentionKind = sigil === "#" ? "channel" : modifier === "&" ? "role" : "user";
+      return { id, name: trimmed, mention: kind };
+    }
+  }
+  if (isSnowflake(trimmed)) return { id: trimmed, name: trimmed };
 
   return { name: trimmed.replace(/^[#@]/, "").trim() };
 }
@@ -47,6 +71,15 @@ function normalize(value: string): string {
   return value.toLowerCase().replace(/[\s_-]+/g, "");
 }
 
+/** Options for lookups that feed destructive actions. */
+export interface MatchOptions {
+  /**
+   * Refuse substring matches. A near miss must never pick the target of a ban,
+   * delete or role removal, so only the literal or normalised name counts.
+   */
+  exact?: boolean;
+}
+
 interface Named {
   id: string;
   name: string;
@@ -54,13 +87,43 @@ interface Named {
   detail?: string;
 }
 
+function isNotFound(error: unknown): boolean {
+  return error instanceof ToolError && error.code === "NOT_FOUND";
+}
+
+function notFound(candidates: readonly Named[], query: string, kind: string, exact: boolean): ToolError {
+  const available = candidates.slice(0, 25).map((c) => c.name).join(", ");
+  const list = available ? `Available ${kind}s: ${available}` : `The bot can see no ${kind}s here.`;
+  return new ToolError(`No ${kind} named "${query}" was found.`, {
+    code: "NOT_FOUND",
+    hint: exact ? `Destructive actions need the exact name or the ID. ${list}` : list,
+  });
+}
+
+function ambiguous(query: string, kind: string, pool: readonly Named[]): ToolError {
+  const names = pool
+    .slice(0, 15)
+    .map((c) => `${c.name} (${c.detail ? `${c.detail}, ` : ""}${c.id})`)
+    .join(", ");
+  return new ToolError(`"${query}" matches ${pool.length} ${kind}s, so it is ambiguous.`, {
+    code: "AMBIGUOUS",
+    hint: `Pass the exact name or the ID. Matches: ${names}`,
+  });
+}
+
 /**
  * Picks the single best match, or throws a message that lists the real options
  * so the agent can immediately retry with a valid value.
+ *
+ * With `exact`, the substring pass is skipped entirely: only the literal or
+ * normalised name can select a candidate.
  */
-function pickOne<T extends Named>(candidates: readonly T[], query: string, kind: string): T {
+function pickOne<T extends Named>(candidates: readonly T[], query: string, kind: string, exact = false): T {
   const query_ = query.trim();
   const target = normalize(query_);
+
+  // An empty name ("#" or "@" alone) would match everything through includes().
+  if (target === "") throw notFound(candidates, query, kind, exact);
 
   // Tried in order of decreasing precision. The literal pass matters more than
   // it looks: Discord servers routinely hold a "general" text channel next to a
@@ -69,35 +132,29 @@ function pickOne<T extends Named>(candidates: readonly T[], query: string, kind:
   const literal = candidates.filter((c) => c.name === query_);
   if (literal.length === 1) return literal[0] as T;
 
-  const exact = candidates.filter((c) => normalize(c.name) === target);
-  if (exact.length === 1) return exact[0] as T;
+  const exactPool = candidates.filter((c) => normalize(c.name) === target);
+  if (exactPool.length === 1) return exactPool[0] as T;
 
-  const pool = exact.length > 1 ? exact : candidates.filter((c) => normalize(c.name).includes(target));
-
-  if (pool.length === 1) return pool[0] as T;
-
-  if (pool.length === 0) {
-    const available = candidates.slice(0, 25).map((c) => c.name).join(", ");
-    throw new ToolError(`No ${kind} named "${query}" was found.`, {
-      code: "NOT_FOUND",
-      hint: available ? `Available ${kind}s: ${available}` : `The bot can see no ${kind}s here.`,
-    });
+  let pool: readonly T[] = exactPool;
+  if (exactPool.length === 0 && !exact) {
+    pool = candidates.filter((c) => normalize(c.name).includes(target));
   }
 
-  const names = pool
-    .slice(0, 15)
-    .map((c) => `${c.name} (${c.detail ? `${c.detail}, ` : ""}${c.id})`)
-    .join(", ");
-  throw new ToolError(`"${query}" matches ${pool.length} ${kind}s, so it is ambiguous.`, {
-    code: "AMBIGUOUS",
-    hint: `Pass the exact name or the ID. Matches: ${names}`,
-  });
+  if (pool.length === 1) return pool[0] as T;
+  if (pool.length === 0) throw notFound(candidates, query, kind, exact);
+  throw ambiguous(query, kind, pool);
 }
 
 function namedChannels(channels: readonly APIChannel[]): Named[] {
   return channels.flatMap<Named>((c) =>
     "name" in c && c.name ? [{ id: c.id, name: c.name, detail: channelTypeName(c.type) }] : [],
   );
+}
+
+/** A member as a pick candidate, showing the username when the name is something else. */
+function memberNamed(member: APIGuildMember, name: string): Named {
+  const detail = name === member.user.username ? undefined : `@${member.user.username}`;
+  return { id: member.user.id, name, detail };
 }
 
 /**
@@ -121,11 +178,10 @@ export class Resolver {
   readonly #emojis = new TtlCache<APIEmoji[]>(300_000, 32);
   // Active threads come and go quickly, so they get a much shorter life.
   readonly #threads = new TtlCache<APIThreadChannel[]>(30_000, 32);
-  // guild id + normalised name -> member id. Names rarely change.
-  readonly #members = new TtlCache<string>(600_000, 5_000);
   // Channels never move between servers, so this map is never invalidated.
   readonly #channelGuild = new Map<string, string | null>();
-  readonly #dmChannels = new Map<string, string>();
+  // Holds the in-flight promise too, so concurrent DMs to one user open a single channel.
+  readonly #dmChannels = new Map<string, Promise<string>>();
 
   #self: Promise<APIUser> | undefined;
 
@@ -252,39 +308,56 @@ export class Resolver {
   /**
    * Resolves a channel or thread within a guild.
    *
-   * Active threads are not part of Discord's channel listing, so they are only
-   * consulted when no channel matches - the common case pays nothing extra.
+   * Active threads are not part of Discord's channel listing. They are only
+   * fetched when no channel matches exactly, so the common case pays nothing
+   * extra; when they are fetched, they compete with channels in one pick, so
+   * a thread named exactly "bug-report" beats a channel "bug-report-archive".
    */
-  async channelId(input: string, guildId: string): Promise<string> {
+  async channelId(input: string, guildId: string, options: MatchOptions = {}): Promise<string> {
     const ref = parseRef(input);
-    if (ref.id) return ref.id;
+    if (ref.mention && ref.mention !== "channel") {
+      throw new ToolError(`That is a ${ref.mention} mention, not a channel.`, {
+        code: "INVALID_ARGS",
+        hint: "Pass a channel name, #name, or the channel ID.",
+      });
+    }
+    if (ref.id) {
+      // Only a channel already known to live elsewhere is refused. An unknown ID
+      // costs no request to check, and Discord will reject a truly bad one anyway.
+      const known = this.#channelGuild.get(ref.id);
+      if (typeof known === "string" && known !== guildId) {
+        throw new ToolError("That channel belongs to a different server.", {
+          code: "WRONG_GUILD",
+          hint: "Pass the server that contains this channel, or omit guild.",
+        });
+      }
+      return ref.id;
+    }
 
     const channels = namedChannels(await this.channels(guildId));
-    try {
-      return pickOne(channels, ref.name, "channel").id;
-    } catch (error) {
-      if (!(error instanceof ToolError) || error.code !== "NOT_FOUND") throw error;
+    const hasExact = channels.some((c) => c.name === ref.name || normalize(c.name) === normalize(ref.name));
+    if (hasExact) return pickOne(channels, ref.name, "channel", options.exact).id;
 
-      const threads = namedChannels(await this.threads(guildId).catch(() => []));
-      if (threads.length === 0) throw error;
-      try {
-        return pickOne(threads, ref.name, "thread").id;
-      } catch (threadError) {
-        if (threadError instanceof ToolError && threadError.code === "NOT_FOUND") throw error;
-        throw threadError;
-      }
-    }
+    // A thread listing failure should not hide the channels that were found.
+    const threads = namedChannels(await this.threads(guildId).catch(() => []));
+    return pickOne([...channels, ...threads], ref.name, "channel", options.exact).id;
   }
 
   /** Resolves a role. `@everyone` maps to the guild's own ID, as Discord defines it. */
-  async roleId(input: string, guildId: string): Promise<string> {
+  async roleId(input: string, guildId: string, options: MatchOptions = {}): Promise<string> {
     if (EVERYONE.test(input.trim())) return guildId;
 
     const ref = parseRef(input);
+    if (ref.mention && ref.mention !== "role") {
+      throw new ToolError(`That is a ${ref.mention} mention, not a role.`, {
+        code: "INVALID_ARGS",
+        hint: "Pass a role name, @role, or the role ID.",
+      });
+    }
     if (ref.id) return ref.id;
 
     const roles = await this.roles(guildId);
-    return pickOne(roles.map((r) => ({ id: r.id, name: r.name })), ref.name, "role").id;
+    return pickOne(roles.map((r) => ({ id: r.id, name: r.name })), ref.name, "role", options.exact).id;
   }
 
   /**
@@ -295,65 +368,118 @@ export class Resolver {
    * not require the privileged Server Members intent. Returns the member
    * object when the search produced one, so callers that need it can skip a
    * second fetch.
+   *
+   * Names are deliberately not cached. A nickname can change at any time, and
+   * a stale name -> ID entry could make a ban or a role change hit the wrong
+   * person. The search is a single cheap request, and Discord itself
+   * de-duplicates identical searches that are in flight at the same moment.
    */
-  async member(input: string, guildId: string): Promise<{ id: string; member?: APIGuildMember }> {
+  async member(
+    input: string,
+    guildId: string,
+    options: MatchOptions = {},
+  ): Promise<{ id: string; member?: APIGuildMember }> {
     const ref = parseRef(input);
+    if (ref.mention && ref.mention !== "user") {
+      throw new ToolError("That is a role/channel mention, not a member.", {
+        code: "INVALID_ARGS",
+        hint: "Pass a member name, @name, or the user ID.",
+      });
+    }
     if (ref.id) return { id: ref.id };
 
-    const cacheKey = `${guildId}:${normalize(ref.name)}`;
-    const cached = this.#members.get(cacheKey);
-    if (cached) return { id: cached };
-
-    const matches = await this.#rest.get<APIGuildMember[]>(Routes.guildMembersSearch(guildId), {
-      query: ref.name,
-      limit: 25,
-    });
-
-    const byId = new Map(matches.map((m) => [m.user.id, m]));
-    const displayNames = matches.map<Named>((m) => ({
-      id: m.user.id,
-      name: m.nick ?? m.user.global_name ?? m.user.username,
-    }));
-
-    let id: string;
-    // A nickname can differ from the username that was searched for, so try
-    // usernames as a second pass before giving up.
-    try {
-      id = pickOne(displayNames, ref.name, "member").id;
-    } catch (error) {
-      const usernames = matches.map<Named>((m) => ({ id: m.user.id, name: m.user.username }));
-      if (!usernames.some((m) => normalize(m.name) === normalize(ref.name))) {
-        if (error instanceof ToolError && error.code === "NOT_FOUND") {
-          throw new ToolError(`No member named "${ref.name}" was found.`, {
-            code: "NOT_FOUND",
-            hint:
-              "Search matches the start of a username or nickname. Try discord_list_members with a shorter " +
-              "query, or pass the user ID.",
-          });
-        }
-        throw error;
-      }
-      id = pickOne(usernames, ref.name, "member").id;
+    const query = ref.name;
+    const target = normalize(query);
+    if (target === "") {
+      throw new ToolError(`No member named "${input.trim()}" was found.`, {
+        code: "NOT_FOUND",
+        hint: "Pass a name or the user ID.",
+      });
     }
 
-    this.#members.set(cacheKey, id);
-    const member = byId.get(id);
-    return member ? { id, member } : { id };
+    const matches = await this.#rest.get<APIGuildMember[]>(Routes.guildMembersSearch(guildId), {
+      query,
+      limit: MEMBER_SEARCH_LIMIT,
+    });
+    const byId = new Map(matches.map((m) => [m.user.id, m]));
+    const found = (id: string): { id: string; member?: APIGuildMember } => {
+      const member = byId.get(id);
+      return member ? { id, member } : { id };
+    };
+
+    // An exact name on any of the three fields beats a partial hit on someone
+    // else, so "bob" finds the user named bob even if another member's nickname is "Bobby".
+    const exactHits = matches.filter((m) =>
+      [m.user.username, m.user.global_name, m.nick].some((n) => n != null && normalize(n) === target),
+    );
+    if (exactHits.length === 1 && exactHits[0]) return found(exactHits[0].user.id);
+    if (exactHits.length > 1) {
+      throw ambiguous(
+        query,
+        "member",
+        exactHits.map((m) => memberNamed(m, m.nick ?? m.user.global_name ?? m.user.username)),
+      );
+    }
+
+    // A full page means the real set may hold the exact name too, so a partial
+    // pick would be a guess.
+    if (matches.length >= MEMBER_SEARCH_LIMIT) {
+      throw new ToolError(`"${query}" matches too many members to choose one.`, {
+        code: "AMBIGUOUS",
+        hint: "Too many members match; type more of the name or pass the ID.",
+      });
+    }
+
+    if (options.exact) {
+      throw new ToolError(`No member named "${query}" was found.`, {
+        code: "NOT_FOUND",
+        hint: "Destructive actions need the exact name or the ID.",
+      });
+    }
+
+    // Search matches the start of a name, so a partial pick is only a fallback.
+    const displayNames = matches.map((m) => memberNamed(m, m.nick ?? m.user.global_name ?? m.user.username));
+    try {
+      return found(pickOne(displayNames, query, "member").id);
+    } catch (error) {
+      if (!isNotFound(error)) throw error;
+    }
+
+    // A nickname can hide the username that was searched for.
+    const usernames = matches.map((m) => memberNamed(m, m.user.username));
+    try {
+      return found(pickOne(usernames, query, "member").id);
+    } catch (error) {
+      if (!isNotFound(error)) throw error;
+      throw new ToolError(`No member named "${query}" was found.`, {
+        code: "NOT_FOUND",
+        hint:
+          "Search matches the start of a username or nickname. Try discord_list_members with a shorter " +
+          "query, or pass the user ID.",
+      });
+    }
   }
 
-  async memberId(input: string, guildId: string): Promise<string> {
-    return (await this.member(input, guildId)).id;
+  async memberId(input: string, guildId: string, options: MatchOptions = {}): Promise<string> {
+    return (await this.member(input, guildId, options)).id;
   }
 
   /** The DM channel with a user, opened once and remembered. */
   async dmChannel(userId: string): Promise<string> {
-    const known = this.#dmChannels.get(userId);
-    if (known) return known;
-
-    const channel = await this.#rest.post<APIChannel>(Routes.userChannels(), { recipient_id: userId });
-    this.#dmChannels.set(userId, channel.id);
-    this.#channelGuild.set(channel.id, null);
-    return channel.id;
+    let pending = this.#dmChannels.get(userId);
+    if (!pending) {
+      const opened = this.#rest.post<APIChannel>(Routes.userChannels(), { recipient_id: userId }).then((channel) => {
+        this.#channelGuild.set(channel.id, null);
+        return channel.id;
+      });
+      // Forget a failed attempt, so a transient error is not pinned for the process lifetime.
+      opened.catch(() => {
+        if (this.#dmChannels.get(userId) === opened) this.#dmChannels.delete(userId);
+      });
+      this.#dmChannels.set(userId, opened);
+      pending = opened;
+    }
+    return pending;
   }
 
   /**
@@ -403,6 +529,11 @@ export class Resolver {
     this.#threads.delete(guildId);
   }
 
+  /** Drops a guild's active-thread listing after a thread is created or changes state. */
+  invalidateThreads(guildId: string): void {
+    this.#threads.delete(guildId);
+  }
+
   /** Drops every cached listing for a guild. */
   invalidate(guildId: string): void {
     this.#channels.delete(guildId);
@@ -418,6 +549,8 @@ export class Resolver {
   applyDispatch(payload: GatewayDispatchPayload): void {
     switch (payload.t) {
       case "GUILD_CREATE": {
+        // A newly joined server is missing from the cached guild list until it is refetched.
+        this.#guilds.clear();
         const guild = payload.d;
         if ("unavailable" in guild && guild.unavailable) return;
         if ("channels" in guild && Array.isArray(guild.channels)) {
@@ -446,7 +579,11 @@ export class Resolver {
         return;
       }
       case "THREAD_CREATE":
+      case "THREAD_UPDATE":
       case "THREAD_DELETE":
+      case "THREAD_LIST_SYNC":
+        // Threads also change state (archive, lock, rename) without a create or delete,
+        // and a list sync replaces the set entirely, so every thread event drops the listing.
         if (payload.d.guild_id) this.#threads.delete(payload.d.guild_id);
         return;
       case "GUILD_ROLE_CREATE":

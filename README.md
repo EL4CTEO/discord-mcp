@@ -17,11 +17,12 @@
 
 ## Features
 
-- **33 tools**: messages, DMs, file uploads, polls, channels, threads, forum posts, members, roles, moderation and live events
+- **38 tools**: messages, DMs, uploads, forwards, polls, channels, threads, forums, members, roles, moderation, AutoMod, scheduled events, emojis, invites and live events
 - **Names instead of IDs**: say `"general"` or `"@everyone"`, never a snowflake
 - **Bulk on every tool**: pass an array anywhere a single value goes. `discord_batch` mixes different tools
 - **Long messages just work**: text over 2000 characters is split cleanly, and code blocks stay intact
-- **Safe by default**: destructive tools stay hidden until you enable them
+- **Safe by default**: destructive actions stay off until you enable them
+- **Hardened against prompt injection**: no admin-grade grants, mass pings, secret-file uploads or internal-network fetches unless you allow them
 - **Helpful errors**: every error says *how to fix it*, not just what broke
 
 ## Setup
@@ -52,12 +53,15 @@ Restart Claude Code, then ask it to run `discord_whoami` to check the connection
 |---|---|---|
 | `DISCORD_TOKEN` | *required* | Bot token (no `Bot ` prefix) |
 | `DISCORD_DEFAULT_GUILD` | - | Default server, so tools can omit `guild` |
-| `DISCORD_ALLOW_DESTRUCTIVE` | `false` | Enables ban, kick, timeout and delete tools |
+| `DISCORD_ALLOW_DESTRUCTIVE` | `false` | Enables ban, kick, timeout, deletes, and granting admin-grade permissions |
+| `DISCORD_ALLOW_MASS_MENTIONS` | `false` | Lets messages ping `@everyone` / `@here` |
+| `DISCORD_UPLOAD_DIRS` | working dir | Folders local files may be uploaded from (`*` = anywhere) |
 | `DISCORD_PRIVILEGED_INTENTS` | `true` | Set `false` if you cannot enable intents in the portal |
 | `DISCORD_BATCH_CONCURRENCY` | `4` | Parallel operations per batch |
 | `DISCORD_REQUEST_TIMEOUT_MS` | `15000` | Timeout per Discord request |
 | `DISCORD_MAX_RESPONSE_CHARS` | `25000` | Response size cap |
 | `DISCORD_GATEWAY_IDLE_MS` | `120000` | Idle time before the live connection closes |
+| `DISCORD_EVENT_BUFFER` | `200` | Live events kept in memory |
 
 ## Tools
 
@@ -65,17 +69,30 @@ Restart Claude Code, then ask it to run `discord_whoami` to check the connection
 
 **Channels** - `discord_list_channels` `discord_create_channel` `discord_edit_channel` `discord_delete_channel`\* `discord_manage_thread` `discord_set_channel_permissions` `discord_reorder_channels`
 
-**Messages** - `discord_send_message` `discord_send_dm` `discord_read_messages` `discord_search_messages` `discord_edit_message` `discord_delete_message`\* `discord_react` `discord_pin_message`
+**Messages** - `discord_send_message` `discord_send_dm` `discord_read_messages` `discord_search_messages` `discord_edit_message` `discord_delete_message`\* `discord_react` `discord_pin_message` `discord_manage_poll`
 
-**People** - `discord_list_members` `discord_get_member` `discord_edit_member` `discord_manage_member_roles` `discord_list_roles` `discord_manage_role`\* `discord_reorder_roles`
+**People** - `discord_list_members` `discord_get_member` `discord_edit_member` `discord_manage_member_roles` `discord_list_roles` `discord_manage_role` `discord_reorder_roles`
 
-**Moderation** - `discord_moderate_member`\* `discord_bulk_delete`\* `discord_list_bans` `discord_get_audit_log`
+**Moderation** - `discord_moderate_member` `discord_bulk_delete`\* `discord_list_bans` `discord_get_audit_log` `discord_automod`
+
+**Community** - `discord_scheduled_events` `discord_manage_emojis` `discord_manage_invites`
 
 **Live events** - `discord_wait_for_event` `discord_recent_events`
 
 **Batch** - `discord_batch`
 
-\* needs `DISCORD_ALLOW_DESTRUCTIVE=true`, and stays hidden until then
+\* needs `DISCORD_ALLOW_DESTRUCTIVE=true`, and stays hidden until then. Tools that mix safe and destructive actions (deleting a role, kicking or banning, deleting events, rules, emojis or invites) refuse just the destructive ones.
+
+## Security
+
+Discord messages are written by strangers, and the agent reads them. So the server refuses what an injected instruction would ask for, unless you allow it:
+
+- **Admin-grade grants**: creating or assigning a role with Administrator, Manage Roles, Ban Members and similar, granting them on a channel, or un-hiding a private channel
+- **Mass pings**: `@everyone` / `@here` need `DISCORD_ALLOW_MASS_MENTIONS=true`
+- **File uploads**: only from `DISCORD_UPLOAD_DIRS`. Keys, `.env` files, the bot token and private keys are refused, even renamed
+- **URL uploads**: only public `http(s)` hosts. Private, loopback and cloud-metadata addresses are blocked, including through redirects and DNS tricks
+- **Exact targets**: bans, kicks, timeouts, purges and deletes need the exact name or ID, never a partial match
+- **Strict arguments**: a misspelled argument is rejected instead of silently ignored
 
 ## Batch example
 

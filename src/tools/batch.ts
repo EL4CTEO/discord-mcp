@@ -6,6 +6,18 @@ import { mapLanes } from "../lib/limiter.js";
 import type { Settled } from "../lib/limiter.js";
 import { ToolError } from "../lib/errors.js";
 
+/**
+ * Most Discord calls one batch may make once fan-outs are expanded. Without a
+ * cap, 50 operations over 50-item arrays would queue 2500 requests in one call.
+ */
+const MAX_CALLS = 100;
+
+/** Failed items a batch error spells out before summarising the rest. */
+const DETAIL_ITEMS = 10;
+
+/** Keys a fan-out result row uses for itself, as opposed to the bulk argument's value. */
+const ROW_KEYS = new Set(["ok", "error", "summary", "data"]);
+
 export const batch = defineTool({
   name: "discord_batch",
   title: "Run several Discord tools in parallel",
@@ -42,7 +54,10 @@ export const batch = defineTool({
     stop_on_error: z
       .boolean()
       .default(false)
-      .describe("Abandon operations that have not started once one fails. In-flight work still completes."),
+      .describe(
+        "Abandon operations that have not started once one fails, including a fan-out where any item failed. " +
+          "In-flight work still completes.",
+      ),
   },
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   async handler(args, ctx) {
@@ -57,6 +72,15 @@ export const batch = defineTool({
       tool: op.tool,
       args: withDefaults(op.args, args.defaults, ctx.accepts(op.tool)),
     }));
+
+    // Checked before anything runs, so an oversized batch changes nothing.
+    const calls = operations.reduce((total, op) => total + fanOutSize(op.args, ctx.bulkArgs(op.tool)), 0);
+    if (calls > MAX_CALLS) {
+      throw new ToolError(`This batch would make ${calls} Discord calls; the limit is ${MAX_CALLS}.`, {
+        code: "TOO_MANY_CALLS",
+        hint: "Split the work into several discord_batch calls.",
+      });
+    }
 
     // Group by the rate-limit bucket each operation will land in, so the
     // scheduler parallelises across buckets and stays sequential within one.
@@ -79,7 +103,18 @@ export const batch = defineTool({
       // call - there is no second implementation to keep in sync.
       async (entry) => {
         try {
-          return await ctx.invoke(entry.tool, entry.args);
+          const outcome = await ctx.invoke(entry.tool, entry.args);
+          // A fan-out where everything failed is a failed operation. A partial one
+          // only halts the batch when stop_on_error asks for that. Halting works by
+          // throwing, so such an operation is also reported as failed. Its per-item
+          // errors go into the message so they are not lost.
+          if (outcome.failed === "all") {
+            throw new ToolError(outcome.summary, { code: "ALL_FAILED", hint: failureDetail(outcome) });
+          }
+          if (outcome.failed === "some" && args.stop_on_error) {
+            throw new ToolError(outcome.summary, { code: "PARTIAL_FAILURE", hint: failureDetail(outcome) });
+          }
+          return outcome;
         } finally {
           ctx.progress(++done, operations.length, entry.tool);
         }
@@ -109,6 +144,7 @@ export const batch = defineTool({
       summary:
         `Batch finished: ${succeeded}/${data.length} succeeded` + (failed > 0 ? `, ${plural(failed, "failure")}.` : "."),
       data,
+      ...(failed === 0 ? {} : { failed: succeeded === 0 ? ("all" as const) : ("some" as const) }),
     };
   },
 });
@@ -125,6 +161,35 @@ function withDefaults(
     if (merged[key] === undefined && accepts(key)) merged[key] = value;
   }
   return merged;
+}
+
+/**
+ * Discord calls one operation expands to: its longest bulk array, or 1 when it
+ * has none. Only bulk arguments count - other arrays, such as a role list, are
+ * sent as one request.
+ */
+function fanOutSize(args: Record<string, unknown>, bulkArgs: readonly string[]): number {
+  let size = 1;
+  for (const arg of bulkArgs) {
+    const value = args[arg];
+    if (Array.isArray(value)) size = Math.max(size, value.length);
+  }
+  return size;
+}
+
+/** Compact list of a fan-out's failed items, so a failed operation still says which items broke and why. */
+function failureDetail(outcome: Outcome): string {
+  const rows = Array.isArray(outcome.data) ? (outcome.data as Array<Record<string, unknown>>) : [];
+  const failures = rows.filter((row) => row["ok"] === false);
+
+  const lines = failures.slice(0, DETAIL_ITEMS).map((row) => {
+    const item = Object.entries(row).find(([key]) => !ROW_KEYS.has(key))?.[1];
+    const value = typeof item === "string" ? item : JSON.stringify(item);
+    return `${value}: ${String(row["error"] ?? "").replace(/\n/g, " ")}`;
+  });
+
+  const more = failures.length - lines.length;
+  return `Failed items: ${lines.join("; ")}${more > 0 ? `; and ${more} more` : ""}`;
 }
 
 /**

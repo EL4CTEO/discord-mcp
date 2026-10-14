@@ -1,10 +1,11 @@
 import { z } from "zod";
 import { Routes } from "discord-api-types/v10";
-import type { APIGuildMember } from "discord-api-types/v10";
+import type { APIGuildMember, APIRole } from "discord-api-types/v10";
 import { defineTool, errorText } from "./registry.js";
 import { plural } from "./util.js";
 import { formatMember } from "../lib/format.js";
 import { mapWithConcurrency } from "../lib/limiter.js";
+import { assertMayGrant } from "../lib/guards.js";
 import { ToolError } from "../lib/errors.js";
 import { auditReason, channelRef, guildRef, memberRef, roleRef } from "../schemas/common.js";
 
@@ -34,7 +35,9 @@ export const listMembers = defineTool({
       args.with_role ? ctx.resolver.roleId(args.with_role, guildId) : undefined,
     ]);
 
-    const filtered = roleId === undefined ? members : members.filter((m) => m.roles.includes(roleId));
+    // @everyone resolves to the guild id, which no member lists in its roles, so it filters nothing.
+    const filterId = roleId === guildId ? undefined : roleId;
+    const filtered = filterId === undefined ? members : members.filter((m) => m.roles.includes(filterId));
     const last = members[members.length - 1];
     const more =
       !args.query && members.length === args.limit && last ? ` More members exist: pass after=${last.user.id}.` : "";
@@ -42,7 +45,7 @@ export const listMembers = defineTool({
     return {
       summary:
         `${plural(filtered.length, "member")} in server ${guildId}` +
-        (roleId === undefined ? "" : ` with that role (of ${members.length} fetched)`) +
+        (filterId === undefined ? "" : ` with that role (of ${members.length} fetched)`) +
         `.${more}`,
       data: filtered.map((m) => formatMember(m, roleNames)),
     };
@@ -165,16 +168,36 @@ export const manageMemberRoles = defineTool({
     }
 
     const guildId = await ctx.resolver.guildId(args.guild);
+    // Taking a role away is a removal, so its targets must match exactly, like other removals.
+    const removing = (args.remove?.length ?? 0) > 0;
     const [resolved, addIds, removeIds] = await Promise.all([
-      ctx.resolver.member(args.member, guildId),
+      ctx.resolver.member(args.member, guildId, { exact: removing }),
       Promise.all((args.add ?? []).map((r) => ctx.resolver.roleId(r, guildId))),
-      Promise.all((args.remove ?? []).map((r) => ctx.resolver.roleId(r, guildId))),
+      Promise.all((args.remove ?? []).map((r) => ctx.resolver.roleId(r, guildId, { exact: true }))),
     ]);
     const userId = resolved.id;
 
     const clash = addIds.filter((id) => removeIds.includes(id));
     if (clash.length > 0) {
       throw new ToolError("The same role is in both add and remove.", { code: "CONFLICTING_ARGS" });
+    }
+
+    // Granting a role with Administrator or Manage Roles is gated like a
+    // destructive action. Removing roles is never gated. Checked before any request.
+    if (!ctx.config.allowDestructive && addIds.length > 0) {
+      // Read fresh, not from cache: a role given Administrator in the Discord
+      // client a minute ago must not pass on its old permissions.
+      const byId = new Map((await ctx.rest.get<APIRole[]>(Routes.guildRoles(guildId))).map((r) => [r.id, r]));
+      for (const id of addIds) {
+        const role = byId.get(id);
+        if (role === undefined) {
+          throw new ToolError(`Role ${id} does not exist in this server.`, {
+            code: "NOT_FOUND",
+            hint: "Call discord_list_roles for valid roles.",
+          });
+        }
+        assertMayGrant(role.permissions, false, `member ${args.member} via role "${role.name}"`);
+      }
     }
 
     const operations = [
@@ -212,8 +235,14 @@ export const manageMemberRoles = defineTool({
     const applied = results.flatMap((r, i) => (r.ok ? [operations[i]?.label] : []));
     const failed = results.flatMap((r, i) => (r.ok ? [] : [{ role: operations[i]?.label, error: errorText(r.error) }]));
 
-    if (applied.length === 0 && failed.length > 0 && operations.length === 1) {
-      throw (results[0] as { error: unknown }).error;
+    // Nothing landed, so reporting success would mislead the agent. One change
+    // keeps its own error; several name every role that failed.
+    if (applied.length === 0 && failed.length > 0) {
+      if (operations.length === 1) throw (results[0] as { error: unknown }).error;
+      throw new ToolError(`No role change applied to member ${userId}.`, {
+        code: "ROLE_CHANGE_FAILED",
+        hint: failed.map((f) => `${f.role}: ${f.error}`).join("; "),
+      });
     }
 
     return {

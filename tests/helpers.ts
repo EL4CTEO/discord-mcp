@@ -13,6 +13,8 @@ export const config = (overrides: Partial<Config> = {}): Config => ({
   gatewayIdleMs: 120000,
   eventBufferSize: 200,
   batchConcurrency: 4,
+  uploadDirs: undefined,
+  allowMassMentions: false,
   ...overrides,
 });
 

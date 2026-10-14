@@ -16,7 +16,7 @@ const resolver = {
   guildId: async () => GUILD,
   channelId: async (input: string) => input,
   roleId: async (input: string) => `role-${input}`,
-  roles: async () => [],
+  roles: async () => ["A", "B", "Old"].map((n) => ({ id: `role-${n}`, name: n, permissions: "0" })),
   member: async () => ({ id: USER, member: { user: { id: USER }, roles: ["role-Old"] } }),
   memberId: async () => USER,
   channelGuildId: async () => GUILD,
@@ -25,12 +25,15 @@ const resolver = {
 
 describe("discord_manage_member_roles", () => {
   it("collapses several changes into one PATCH of the role list", async () => {
-    const { rest, calls } = fakeRest();
+    const { rest, calls: all } = fakeRest({
+      [`/guilds/${GUILD}/roles`]: ["A", "B", "Old"].map((n) => ({ id: `role-${n}`, name: n, permissions: "0" })),
+    });
     await registryWith([manageMemberRoles], { rest, resolver }).run("discord_manage_member_roles", {
       member: "alice",
       add: ["A", "B"],
       remove: ["Old"],
     });
+    const calls = all.filter((c) => c.method !== "GET");
 
     expect(calls).toHaveLength(1);
     expect(calls[0]?.method).toBe("PATCH");
@@ -38,11 +41,14 @@ describe("discord_manage_member_roles", () => {
   });
 
   it("uses the single-role endpoint for one change", async () => {
-    const { rest, calls } = fakeRest();
+    const { rest, calls: all } = fakeRest({
+      [`/guilds/${GUILD}/roles`]: ["A", "B", "Old"].map((n) => ({ id: `role-${n}`, name: n, permissions: "0" })),
+    });
     await registryWith([manageMemberRoles], { rest, resolver }).run("discord_manage_member_roles", {
       member: "alice",
       add: ["A"],
     });
+    const calls = all.filter((c) => c.method !== "GET");
     expect(calls.map((c) => c.method)).toEqual(["PUT"]);
     expect(calls[0]?.route).toContain("/roles/role-A");
   });

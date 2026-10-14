@@ -6,6 +6,15 @@ import { VERSION } from "../version.js";
 export type QueryParams = Record<string, string | number | boolean | undefined>;
 
 /**
+ * Per-read options. The signal only ends the caller's wait. Writes take no
+ * signal on purpose: aborting one Discord already applied would invite a retry
+ * that duplicates it.
+ */
+export interface RequestOptions {
+  readonly signal?: AbortSignal;
+}
+
+/**
  * Thin typed facade over @discordjs/rest.
  *
  * The underlying client already queues per-route rate-limit buckets and honours
@@ -39,20 +48,26 @@ export class DiscordRest {
    * bucket. This is de-duplication, not caching: nothing is retained after the
    * request settles, so a later read still sees fresh data. Callers must treat
    * the result as read-only, since concurrent callers share the object.
+   *
+   * The shared request never takes a caller's signal: aborting it would fail
+   * every other caller that joined it. A cancelled caller stops waiting instead,
+   * and the request finishes for the rest.
    */
-  async get<T>(route: RouteLike, query?: QueryParams): Promise<T> {
+  async get<T>(route: RouteLike, query?: QueryParams, options: RequestOptions = {}): Promise<T> {
+    options.signal?.throwIfAborted();
+
     const params = query ? makeURLSearchParams(stripUndefined(query)) : undefined;
     const key = `${route}?${params?.toString() ?? ""}`;
 
-    const inFlight = this.#inFlightGets.get(key);
-    if (inFlight) return inFlight as Promise<T>;
+    let request = this.#inFlightGets.get(key) as Promise<T> | undefined;
+    if (!request) {
+      request = (this.#rest.get(route, { query: params }) as Promise<T>).finally(() => {
+        this.#inFlightGets.delete(key);
+      });
+      this.#inFlightGets.set(key, request as Promise<unknown>);
+    }
 
-    const request = (this.#rest.get(route, { query: params }) as Promise<T>).finally(() => {
-      this.#inFlightGets.delete(key);
-    });
-
-    this.#inFlightGets.set(key, request as Promise<unknown>);
-    return request;
+    return options.signal ? untilAborted(request, options.signal) : request;
   }
 
   /** POST; when `files` are given the body is sent as multipart payload_json. */
@@ -71,6 +86,15 @@ export class DiscordRest {
   async delete<T = void>(route: RouteLike, reason?: string, body?: unknown): Promise<T> {
     return (await this.#rest.delete(route, { reason, body })) as T;
   }
+}
+
+/** Lets one caller stop waiting on shared work without cancelling it for everyone else. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
 }
 
 /** Discord rejects explicit nulls in query strings; drop unset keys entirely. */

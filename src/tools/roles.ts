@@ -1,9 +1,10 @@
 import { z } from "zod";
 import { Routes } from "discord-api-types/v10";
-import type { APIGuildMember, APIRole } from "discord-api-types/v10";
+import type { APIGuildMember, APIRole, APIRoleColors } from "discord-api-types/v10";
 import { defineTool } from "./registry.js";
 import { plural } from "./util.js";
 import { formatRole } from "../lib/format.js";
+import { assertMayGrant } from "../lib/guards.js";
 import { destructiveDisabled, ToolError } from "../lib/errors.js";
 import { auditReason, detail, guildRef, roleRef } from "../schemas/common.js";
 import { rolePermissionBits, rolePermissions } from "../schemas/permissions.js";
@@ -15,6 +16,17 @@ const colour = z
 function toColour(input: string | number | undefined): number | undefined {
   if (input === undefined) return undefined;
   return typeof input === "number" ? input : Number.parseInt(input.replace("#", ""), 16);
+}
+
+/**
+ * Discord deprecated the single `color` field in favour of a colours object.
+ * A secondary colour makes the role a gradient, so it rides on the primary one.
+ */
+function toColors(primary: string | number | undefined, secondary: string | number | undefined): Partial<APIRoleColors> | undefined {
+  if (primary === undefined) return undefined;
+  const colors: Partial<APIRoleColors> = { primary_color: toColour(primary) };
+  if (secondary !== undefined) colors.secondary_color = toColour(secondary);
+  return colors;
 }
 
 export const listRoles = defineTool({
@@ -57,6 +69,7 @@ export const manageRole = defineTool({
     role: roleRef.optional().describe("Target role for edit and delete."),
     name: z.string().min(1).max(100).optional().describe("Role name (new name when editing)."),
     color: colour.optional(),
+    secondary_color: colour.optional().describe("Second colour for a gradient role. Needs color."),
     hoist: z.boolean().optional().describe("Show members with this role separately in the member list."),
     mentionable: z.boolean().optional().describe("Allow anyone to @mention this role."),
     permissions: rolePermissions.optional(),
@@ -64,10 +77,16 @@ export const manageRole = defineTool({
   },
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   async handler(args, ctx) {
+    if (args.secondary_color !== undefined && args.color === undefined) {
+      throw new ToolError("`secondary_color` needs `color` as well, since it is the gradient's other end.", {
+        code: "MISSING_ARG",
+      });
+    }
+
     const guildId = await ctx.resolver.guildId(args.guild);
     const body = {
       name: args.name,
-      color: toColour(args.color),
+      colors: toColors(args.color, args.secondary_color),
       hoist: args.hoist,
       mentionable: args.mentionable,
       permissions: rolePermissionBits(args.permissions),
@@ -76,6 +95,9 @@ export const manageRole = defineTool({
     if (args.action === "create") {
       if (!args.name) throw new ToolError("`name` is required to create a role.", { code: "MISSING_ARG" });
 
+      // A role carrying Administrator or Manage Roles is a route to taking over
+      // the server, so creating one is gated like the destructive actions.
+      assertMayGrant(body.permissions, ctx.config.allowDestructive, `role "${args.name}"`);
       const role = await ctx.rest.post<APIRole>(Routes.guildRoles(guildId), body, args.reason);
       ctx.resolver.upsertRole(guildId, role);
       return { summary: `Created role "${role.name}" (${role.id}).`, data: formatRole(role, "full") };
@@ -95,7 +117,15 @@ export const manageRole = defineTool({
       throw destructiveDisabled("discord_manage_role delete");
     }
 
-    const roleId = await ctx.resolver.roleId(args.role, guildId);
+    const roleId = await ctx.resolver.roleId(args.role, guildId, { exact: args.action === "delete" });
+
+    // Editing can grant permissions too. Only bits the role does not already
+    // hold count, so restating a moderator role's existing powers stays allowed.
+    if (body.permissions !== undefined && !ctx.config.allowDestructive) {
+      // Read fresh: a stale copy holding more bits than the role now has would let new grants pass as old ones.
+      const current = (await ctx.rest.get<APIRole>(Routes.guildRole(guildId, roleId))).permissions;
+      assertMayGrant(BigInt(body.permissions) & ~BigInt(current), false, `role "${args.role}"`);
+    }
 
     if (args.action === "delete") {
       await ctx.rest.delete(Routes.guildRole(guildId, roleId), args.reason);
@@ -197,6 +227,14 @@ export const reorderRoles = defineTool({
       .sort((a, b) => b.position - a.position || (a.id < b.id ? -1 : 1))
       .map((r) => r.id);
     const layout = [...ids, ...rest];
+    if (layout.length > ceiling) {
+      // Positions below the bot are 1..ceiling; any role past that would be
+      // clamped onto a position already taken, and the order would silently break.
+      throw new ToolError(`Only ${ceiling} positions sit below the bot, but ${layout.length} roles need one.`, {
+        code: "NO_ROOM",
+        hint: "Drag the roles apart once in Server Settings -> Roles, then run this again.",
+      });
+    }
 
     const positions = layout
       .map((id, index) => ({ id, position: Math.max(1, ceiling - index) }))

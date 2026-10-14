@@ -15,11 +15,16 @@ const PAGE = 100;
  * workflows) this skips the guild listing entirely - one less round trip per
  * call, and it lets DM channels work even though they belong to no guild.
  */
-export async function resolveChannel(ctx: ToolContext, channel: string, guild?: string): Promise<string> {
+export async function resolveChannel(
+  ctx: ToolContext,
+  channel: string,
+  guild?: string,
+  options: { exact?: boolean } = {},
+): Promise<string> {
   const trimmed = channel.trim();
   if (isSnowflake(trimmed)) return trimmed;
   const guildId = await ctx.resolver.guildId(guild);
-  return ctx.resolver.channelId(trimmed, guildId);
+  return ctx.resolver.channelId(trimmed, guildId, options);
 }
 
 /**
@@ -32,6 +37,7 @@ export async function resolveGuildChannel(
   ctx: ToolContext,
   channel: string,
   guild?: string,
+  options: { exact?: boolean } = {},
 ): Promise<{ guildId: string; channelId: string }> {
   const trimmed = channel.trim();
   if (guild === undefined && isSnowflake(trimmed)) {
@@ -40,7 +46,7 @@ export async function resolveGuildChannel(
   }
 
   const guildId = await ctx.resolver.guildId(guild);
-  const channelId = await ctx.resolver.channelId(trimmed, guildId);
+  const channelId = await ctx.resolver.channelId(trimmed, guildId, options);
   return { guildId, channelId };
 }
 

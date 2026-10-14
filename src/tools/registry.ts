@@ -6,7 +6,7 @@ import type { Resolver } from "../discord/resolve.js";
 import type { GatewayBridge } from "../discord/gateway.js";
 import { destructiveDisabled, normalizeError, ToolError } from "../lib/errors.js";
 import { mapLanes } from "../lib/limiter.js";
-import { describeTrim, fitToBudget } from "../lib/render.js";
+import { clipSummary, describeTrim, fitToBudget } from "../lib/render.js";
 
 /** Most items one call may fan out over. */
 export const MAX_BULK = 50;
@@ -26,6 +26,8 @@ export interface Services {
 export interface RunOptions {
   readonly signal?: AbortSignal;
   readonly progress?: ProgressReporter;
+  /** Set when the call is an operation of discord_batch; see #fanOut. */
+  readonly inBatch?: boolean;
 }
 
 /** Everything a tool handler is allowed to touch. */
@@ -33,10 +35,14 @@ export interface ToolContext extends Services {
   /** Fires when the client cancels the call. Long waits and batches honour it. */
   readonly signal: AbortSignal;
   readonly progress: ProgressReporter;
+  /** True when running as a discord_batch operation, which already supplies the parallelism. */
+  readonly inBatch: boolean;
   /** Runs another registered tool by name. Used by discord_batch. */
   invoke(name: string, args: unknown): Promise<Outcome>;
   /** Whether a registered tool takes the named argument. Used for batch defaults. */
   accepts(tool: string): (key: string) => boolean;
+  /** The arguments a registered tool fans out over. Used to count the calls a batch will make. */
+  bulkArgs(tool: string): readonly string[];
 }
 
 /**
@@ -47,6 +53,12 @@ export interface ToolContext extends Services {
 export interface Outcome {
   readonly summary: string;
   readonly data?: unknown;
+  /**
+   * Set by a fan-out in which some or all items failed. "all" means nothing
+   * succeeded: the call is an error result and a failed batch operation. "some"
+   * is a partial success.
+   */
+  readonly failed?: "all" | "some";
 }
 
 export type Shape = z.ZodRawShape;
@@ -145,7 +157,7 @@ export function effectiveSchema(definition: AnyTool): Shape {
     const description = original.description;
     const optional = original instanceof z.ZodOptional;
     const inner = withoutMetadata(optional ? (original as z.ZodOptional<z.ZodType>).unwrap() : original);
-    const note = `Accepts an array to act on up to ${MAX_BULK} at once, in parallel, with per-item results.`;
+    const note = `Or an array of up to ${MAX_BULK}, run in parallel with per-item results.`;
 
     const widened = z.union([inner, z.array(inner).min(1).max(MAX_BULK)]);
     shape[arg] = (optional ? widened.optional() : widened).describe(
@@ -168,6 +180,17 @@ function withoutMetadata(schema: z.ZodType): z.ZodType {
   return new Schema({ ...schema._zod.def });
 }
 
+/**
+ * The object schema registered with the MCP SDK for a tool.
+ *
+ * Strict on purpose: the SDK's default wrapper silently strips unknown keys, so
+ * a typo such as `author` for `from_author` would drop a filter and widen the
+ * call - on a bulk delete, to everyone's messages.
+ */
+export function strictInputSchema(definition: AnyTool) {
+  return z.object(effectiveSchema(definition)).strict();
+}
+
 /** Identity helper that preserves the generic shape for inference. */
 export function defineTool<S extends Shape>(definition: ToolDefinition<S>): ToolDefinition<S> {
   return definition;
@@ -182,18 +205,27 @@ export function defineTool<S extends Shape>(definition: ToolDefinition<S>): Tool
  * silently reasoning over partial data.
  */
 export function renderOutcome(outcome: Outcome, maxChars: number): CallToolResult {
+  const summary = clipSummary(outcome.summary, maxChars);
+  // A fan-out where nothing succeeded is an error to the client, but its per-item detail is still returned.
+  const failure = outcome.failed === "all" ? { isError: true } : {};
+
   if (outcome.data === undefined) {
-    return { content: [{ type: "text", text: outcome.summary }] };
+    return { content: [{ type: "text", text: summary }], ...failure };
   }
 
-  const fitted = fitToBudget(outcome.data, maxChars - outcome.summary.length - 160);
+  // Clipping the summary first keeps a long one from driving the data budget negative.
+  const fitted = fitToBudget(outcome.data, Math.max(MIN_DATA_BUDGET, maxChars - summary.length - 160));
   const notice = describeTrim(fitted.stats);
 
   return {
-    content: [{ type: "text", text: `${outcome.summary}\n${fitted.text}${notice ? `\n${notice}` : ""}` }],
+    content: [{ type: "text", text: `${summary}\n${fitted.text}${notice ? `\n${notice}` : ""}` }],
     structuredContent: isPlainObject(fitted.value) ? fitted.value : { result: fitted.value },
+    ...failure,
   };
 }
+
+/** Smallest data budget a render gets, however long the summary is. */
+const MIN_DATA_BUDGET = 200;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -255,9 +287,13 @@ export class ToolRegistry {
   async run(name: string, args: unknown, options: RunOptions = {}): Promise<Outcome> {
     const definition = this.#tools.get(name);
     if (!definition) {
+      // Hidden tools stay out of this list too, or the hint advertises exactly what the destructive gate keeps off.
+      const visible = this.list()
+        .filter((tool) => this.#services.config.allowDestructive || tool.destructive !== true)
+        .map((tool) => tool.name);
       throw new ToolError(`Unknown tool "${name}".`, {
         code: "UNKNOWN_TOOL",
-        hint: `Available tools: ${this.names.join(", ")}`,
+        hint: `Available tools: ${visible.join(", ")}`,
       });
     }
 
@@ -290,13 +326,15 @@ export class ToolRegistry {
       ...this.#services,
       signal,
       progress: options.progress ?? NO_PROGRESS,
+      inBatch: options.inBatch === true,
       // Nested calls share cancellation but report no progress of their own;
       // the batch reports progress across all of them instead.
-      invoke: (name, args) => this.run(name, args, { signal }),
+      invoke: (name, args) => this.run(name, args, { signal, inBatch: true }),
       accepts: (tool) => {
         const shape = this.#tools.get(tool)?.inputSchema;
         return (key) => shape !== undefined && Object.hasOwn(shape, key);
       },
+      bulkArgs: (tool) => this.#tools.get(tool)?.bulkArgs ?? [],
     };
   }
 
@@ -358,12 +396,14 @@ export class ToolRegistry {
 
     const succeeded = items.filter((item) => item.ok).length;
     const failed = items.length - succeeded;
+    const failedKind = failed === 0 ? undefined : succeeded === 0 ? "all" : "some";
 
     return {
       summary:
         `${definition.name} on ${items.length} items: ${succeeded} succeeded` +
         (failed > 0 ? `, ${failed} failed.` : "."),
       data,
+      ...(failedKind ? { failed: failedKind } : {}),
     };
   }
 
@@ -384,9 +424,13 @@ export class ToolRegistry {
 
     let done = 0;
     const laneList = [...lanes.values()];
+    // Inside a batch the batch's own lanes already run in parallel. A second pool
+    // here would multiply them: batchConcurrency fan-outs, each with batchConcurrency
+    // items in flight.
+    const limit = ctx.inBatch ? 1 : ctx.config.batchConcurrency;
     const laneResults = await mapLanes(
       laneList,
-      ctx.config.batchConcurrency,
+      limit,
       async (entry) => {
         try {
           return await this.#runOne(definition, { ...args, [bulkArg]: entry.value }, ctx);
@@ -421,7 +465,7 @@ export class ToolRegistry {
   #parse(definition: AnyTool, args: unknown): Record<string, unknown> {
     let schema = this.#validators.get(definition.name);
     if (!schema) {
-      schema = z.object(effectiveSchema(definition)).strict();
+      schema = strictInputSchema(definition);
       this.#validators.set(definition.name, schema);
     }
 

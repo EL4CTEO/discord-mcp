@@ -6,10 +6,41 @@ import type { BulkItem, ToolContext } from "./registry.js";
 import { fetchHistory, guildForChannel, plural, resolveChannel } from "./util.js";
 import { BULK_DELETE_MAX_AGE_MS, deleteMessages } from "./messages.js";
 import { clip, formatMember, formatUser, searchableText } from "../lib/format.js";
-import { ToolError } from "../lib/errors.js";
+import { destructiveDisabled, ToolError } from "../lib/errors.js";
 import { mapWithConcurrency } from "../lib/limiter.js";
 import { isSnowflake } from "../discord/resolve.js";
-import { auditReason, channelRef, detail, guildRef, memberRef } from "../schemas/common.js";
+import { auditReason, channelRef, detail, guildRef, memberRef, messageId } from "../schemas/common.js";
+
+/** Discord returns at most this many bans per request. */
+const BAN_PAGE = 1000;
+/** Bounds one ban lookup to 10,000 bans, so a huge ban list cannot run unbounded. */
+const BAN_MAX_PAGES = 10;
+
+/**
+ * Reads the ban list page by page. Bans come back sorted by user id, so `after`
+ * continues exactly where the previous page stopped.
+ */
+async function fetchBans(ctx: ToolContext, guildId: string, after?: string): Promise<APIBan[]> {
+  const all: APIBan[] = [];
+  let cursor = after;
+  for (let page = 0; page < BAN_MAX_PAGES; page++) {
+    const batch = await ctx.rest.get<APIBan[]>(Routes.guildBans(guildId), { limit: BAN_PAGE, after: cursor });
+    all.push(...batch);
+    const last = batch[batch.length - 1];
+    if (batch.length < BAN_PAGE || last === undefined) break;
+    cursor = last.user.id;
+  }
+  return all;
+}
+
+/**
+ * Kick, ban and timeout remove or silence someone, so they sit behind the
+ * destructive switch. Unban and untimeout only reverse those, and always work.
+ */
+function gateModeration(action: string, allowDestructive: boolean): void {
+  const removesOrSilences = action === "kick" || action === "ban" || action === "timeout";
+  if (removesOrSilences && !allowDestructive) throw destructiveDisabled(`discord_moderate_member ${action}`);
+}
 
 /**
  * Resolves the target of a moderation action.
@@ -23,10 +54,12 @@ async function moderationTarget(ctx: ToolContext, input: string, guildId: string
   const mention = /^<@!?(\d{17,20})>$/.exec(trimmed)?.[1];
   if (mention) return mention;
   if (isSnowflake(trimmed)) return trimmed;
-  if (action !== "unban") return ctx.resolver.memberId(trimmed, guildId);
+  // Removing or silencing the wrong person cannot be undone by the agent, so a
+  // name must match exactly rather than by prefix.
+  if (action !== "unban") return ctx.resolver.memberId(trimmed, guildId, { exact: true });
 
   const name = trimmed.replace(/^@/, "").toLowerCase();
-  const bans = await ctx.rest.get<APIBan[]>(Routes.guildBans(guildId), { limit: 1000 });
+  const bans = await fetchBans(ctx, guildId);
   const matches = bans.filter(
     (b) => b.user.username.toLowerCase() === name || b.user.global_name?.toLowerCase() === name,
   );
@@ -43,7 +76,8 @@ export const moderateMember = defineTool({
   bulkArgs: ["member"],
   missingPermissionHint:
     "Needs Kick Members, Ban Members or Timeout Members depending on the action, AND the bot role must sit " +
-    "ABOVE the target member in Server Settings -> Roles. Server owners can never be moderated.",
+    "ABOVE the target member in Server Settings -> Roles. Server owners can never be moderated. " +
+    "Banning several members at once also needs Manage Server.",
   title: "Kick, ban, unban or time out a member",
   description:
     "Performs a moderation action on a member.\n\n" +
@@ -52,8 +86,8 @@ export const moderateMember = defineTool({
     "members is banned in one request.\n" +
     "- unban: lifts a ban (accepts the banned user's name).\n" +
     "- timeout: mutes them for `duration_minutes` (max 28 days). untimeout clears it.\n\n" +
+    "kick, ban and timeout require DISCORD_ALLOW_DESTRUCTIVE=true; unban and untimeout always work.\n\n" +
     "The bot's highest role must be ABOVE the target's. Always pass `reason` - it goes in the audit log.",
-  destructive: true,
   inputSchema: {
     action: z.enum(["kick", "ban", "unban", "timeout", "untimeout"]),
     member: memberRef,
@@ -76,6 +110,7 @@ export const moderateMember = defineTool({
   },
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   async bulkHandler(args, bulkArg, members, ctx) {
+    gateModeration(args.action, ctx.config.allowDestructive);
     if (bulkArg !== "member" || args.action !== "ban" || members.length < 2) return undefined;
 
     const guildId = await ctx.resolver.guildId(args.guild);
@@ -111,6 +146,7 @@ export const moderateMember = defineTool({
     });
   },
   async handler(args, ctx) {
+    gateModeration(args.action, ctx.config.allowDestructive);
     if (args.action === "timeout" && args.duration_minutes === undefined) {
       throw new ToolError("`duration_minutes` is required for a timeout.", {
         code: "MISSING_ARG",
@@ -177,7 +213,7 @@ export const bulkDelete = defineTool({
     channel: channelRef,
     guild: guildRef.optional(),
     limit: z.number().int().min(1).max(1000).default(50).describe("How many recent messages to consider (1-1000)."),
-    before: z.string().regex(/^\d{17,20}$/).optional().describe("Only consider messages older than this message ID."),
+    before: messageId.optional().describe("Only consider messages older than this message ID."),
     from_author: memberRef.optional().describe("Only delete messages by this member."),
     contains: z.string().min(1).optional().describe("Only delete messages containing this text."),
     include_pinned: z.boolean().default(false).describe("Also delete pinned messages."),
@@ -185,7 +221,7 @@ export const bulkDelete = defineTool({
   },
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   async handler(args, ctx) {
-    const channelId = await resolveChannel(ctx, args.channel, args.guild);
+    const channelId = await resolveChannel(ctx, args.channel, args.guild, { exact: true });
     const cutoff = Date.now() - BULK_DELETE_MAX_AGE_MS;
 
     const [recent, authorId] = await Promise.all([
@@ -196,7 +232,7 @@ export const bulkDelete = defineTool({
         stop: (page) => Date.parse(page[page.length - 1]?.timestamp ?? "") <= cutoff,
       }),
       args.from_author
-        ? guildForChannel(ctx, channelId, args.guild).then((g) => ctx.resolver.memberId(args.from_author as string, g))
+        ? guildForChannel(ctx, channelId, args.guild).then((g) => ctx.resolver.memberId(args.from_author as string, g, { exact: true }))
         : undefined,
     ]);
 
@@ -256,10 +292,11 @@ export const listBans = defineTool({
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   async handler(args, ctx) {
     const guildId = await ctx.resolver.guildId(args.guild);
-    const bans = await ctx.rest.get<APIBan[]>(Routes.guildBans(guildId), {
-      limit: args.query ? 1000 : args.limit,
-      after: args.after,
-    });
+    // A text search has to see every ban to be useful, so it pages the whole list.
+    const bans =
+      args.query === undefined
+        ? await ctx.rest.get<APIBan[]>(Routes.guildBans(guildId), { limit: args.limit, after: args.after })
+        : await fetchBans(ctx, guildId, args.after);
 
     const needle = args.query?.toLowerCase();
     const shown = (
@@ -270,8 +307,12 @@ export const listBans = defineTool({
           )
     ).slice(0, args.limit);
 
+    const last = bans[bans.length - 1];
+    const more =
+      needle === undefined && bans.length === args.limit && last ? ` More bans exist: pass after=${last.user.id}.` : "";
+
     return {
-      summary: `${plural(shown.length, "ban")} in server ${guildId}.`,
+      summary: `${plural(shown.length, "ban")} in server ${guildId}.${more}`,
       data: shown.map((b) => ({ ...formatUser(b.user), reason: b.reason ?? undefined })),
     };
   },

@@ -16,6 +16,16 @@ function fakeRest(routes: Record<string, unknown>): { rest: DiscordRest; calls: 
   return { rest: { get } as unknown as DiscordRest, calls };
 }
 
+/** Runs `fn` and returns the ToolError it throws, failing the test if it does not throw. */
+async function toolErrorOf(fn: () => Promise<unknown>): Promise<ToolError> {
+  const error = await fn().then(
+    () => undefined,
+    (e: unknown) => e,
+  );
+  expect(error).toBeInstanceOf(ToolError);
+  return error as ToolError;
+}
+
 const GUILDS = [
   { id: "111111111111111111", name: "breakout block" },
   { id: "222222222222222222", name: "TestPlace" },
@@ -26,6 +36,12 @@ describe("isSnowflake", () => {
     expect(isSnowflake("111111111111111111")).toBe(true);
     expect(isSnowflake("general")).toBe(false);
     expect(isSnowflake("12345")).toBe(false);
+  });
+
+  it("rejects 20-digit values above the 64-bit snowflake range", () => {
+    expect(isSnowflake("18446744073709551615")).toBe(true);
+    expect(isSnowflake("18446744073709551616")).toBe(false);
+    expect(isSnowflake("99999999999999999999")).toBe(false);
   });
 });
 
@@ -217,15 +233,277 @@ describe("Resolver extras", () => {
     await expect(resolver.selfId()).rejects.toThrow("network blip");
     await expect(resolver.selfId()).resolves.toBe("999999999999999999");
   });
+});
 
-  it("caches member name lookups", async () => {
-    const { rest, calls } = fakeRest({
-      "/members/search": [{ user: { id: "700000000000000001", username: "alice" }, nick: null, roles: [] }],
+describe("member matching", () => {
+  const member = (id: string, username: string, extra: Record<string, unknown> = {}) => ({
+    user: { id, username, global_name: null, ...extra },
+    nick: null,
+    roles: [],
+  });
+
+  it("does not reuse a stale name -> id entry: two lookups both search", async () => {
+    // Someone renamed themselves (or a different "sam" joined) between the two calls.
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce([{ user: { id: "700000000000000001", username: "sam" }, nick: "Sam", roles: [] }])
+      .mockResolvedValueOnce([{ user: { id: "700000000000000002", username: "sam" }, nick: "Sam", roles: [] }]);
+    const resolver = new Resolver({ get } as unknown as DiscordRest, config());
+
+    await expect(resolver.memberId("sam", "1")).resolves.toBe("700000000000000001");
+    await expect(resolver.memberId("sam", "1")).resolves.toBe("700000000000000002");
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it("prefers an exact username over a partial nickname", async () => {
+    // "Bobby" contains "bob", but the member whose username is bob must win.
+    const { rest } = fakeRest({
+      "/members/search": [
+        { user: { id: "700000000000000002", username: "bobby_fan", global_name: null }, nick: "Bobby", roles: [] },
+        { user: { id: "700000000000000001", username: "bob", global_name: null }, nick: "Robert", roles: [] },
+      ],
     });
+    await expect(new Resolver(rest, config()).memberId("bob", "1")).resolves.toBe("700000000000000001");
+  });
+
+  it("matches an exact global display name", async () => {
+    const { rest } = fakeRest({
+      "/members/search": [member("700000000000000001", "xq_17", { global_name: "Dana" })],
+    });
+    await expect(new Resolver(rest, config()).memberId("dana", "1")).resolves.toBe("700000000000000001");
+  });
+
+  it("is ambiguous when several distinct members match exactly", async () => {
+    const { rest } = fakeRest({
+      "/members/search": [
+        member("700000000000000001", "sam_a", { global_name: "Sam" }),
+        member("700000000000000002", "sam_b", { global_name: "Sam" }),
+      ],
+    });
+    const error = await toolErrorOf(() => new Resolver(rest, config()).memberId("sam", "1"));
+
+    expect(error.code).toBe("AMBIGUOUS");
+    expect(error.hint).toContain("700000000000000001");
+    expect(error.hint).toContain("700000000000000002");
+  });
+
+  it("still picks a single partial match when no exact name exists", async () => {
+    const { rest } = fakeRest({ "/members/search": [member("700000000000000001", "alice")] });
+    await expect(new Resolver(rest, config()).memberId("ali", "1")).resolves.toBe("700000000000000001");
+  });
+
+  it("requests up to 100 results from the search endpoint", async () => {
+    const get = vi.fn(async (_route: string, _params?: unknown) => [] as unknown[]);
+    const resolver = new Resolver({ get } as unknown as DiscordRest, config());
+
+    await resolver.member("nobody", "1").catch(() => undefined);
+
+    expect(get.mock.calls[0]?.[1]).toMatchObject({ query: "nobody", limit: 100 });
+  });
+
+  it("refuses to guess when a full page of matches has no exact name", async () => {
+    const crowd = Array.from({ length: 100 }, (_, i) => member(`7${String(i).padStart(17, "0")}`, `user${i}`));
+    const { rest } = fakeRest({ "/members/search": crowd });
+    const error = await toolErrorOf(() => new Resolver(rest, config()).memberId("user", "1"));
+
+    expect(error.code).toBe("AMBIGUOUS");
+    expect(error.hint).toContain("Too many members match; type more of the name or pass the ID.");
+  });
+
+  it("refuses substring matches when exact is requested", async () => {
+    const { rest } = fakeRest({ "/members/search": [member("700000000000000001", "alice")] });
     const resolver = new Resolver(rest, config());
 
-    await resolver.memberId("alice", "1");
-    await resolver.memberId("Alice", "1");
-    expect(calls).toHaveLength(1);
+    const error = await toolErrorOf(() => resolver.memberId("ali", "1", { exact: true }));
+    expect(error.code).toBe("NOT_FOUND");
+    expect(error.hint).toContain("Destructive actions need the exact name or the ID.");
+
+    await expect(resolver.memberId("alice", "1", { exact: true })).resolves.toBe("700000000000000001");
+  });
+
+  it("does not search for an empty name", async () => {
+    const { rest, calls } = fakeRest({ "/members/search": [member("700000000000000001", "alice")] });
+    const error = await toolErrorOf(() => new Resolver(rest, config()).member("@", "1"));
+
+    expect(error.code).toBe("NOT_FOUND");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("rejects role and channel mentions as members", async () => {
+    const resolver = new Resolver(fakeRest({}).rest, config());
+
+    expect((await toolErrorOf(() => resolver.member("<@&700000000000000001>", "1"))).code).toBe("INVALID_ARGS");
+    expect((await toolErrorOf(() => resolver.member("<#300000000000000001>", "1"))).code).toBe("INVALID_ARGS");
+    await expect(resolver.memberId("<@700000000000000001>", "1")).resolves.toBe("700000000000000001");
+    await expect(resolver.memberId("<@!700000000000000001>", "1")).resolves.toBe("700000000000000001");
+  });
+});
+
+describe("exact matching for destructive targets", () => {
+  const ROLES = [
+    { id: "600000000000000001", name: "Moderators" },
+    { id: "600000000000000002", name: "Members" },
+  ];
+
+  it("refuses a role substring when exact is requested", async () => {
+    const { rest } = fakeRest({ "/roles": ROLES });
+    const resolver = new Resolver(rest, config());
+
+    expect(await resolver.roleId("Mod", "1")).toBe("600000000000000001");
+
+    const error = await toolErrorOf(() => resolver.roleId("Mod", "1", { exact: true }));
+    expect(error.code).toBe("NOT_FOUND");
+    expect(error.hint).toContain("Destructive actions need the exact name or the ID.");
+  });
+
+  it("still accepts a normalised exact role name when exact is requested", async () => {
+    const { rest } = fakeRest({ "/roles": ROLES });
+    await expect(new Resolver(rest, config()).roleId("moderators", "1", { exact: true })).resolves.toBe(
+      "600000000000000001",
+    );
+  });
+
+  it("refuses a channel substring when exact is requested", async () => {
+    const { rest } = fakeRest({ "/channels": CHANNELS, "/threads/active": { threads: [] } });
+    const resolver = new Resolver(rest, config());
+
+    expect(await resolver.channelId("announcements", "1")).toBe("300000000000000004");
+
+    const error = await toolErrorOf(() => resolver.channelId("announcements", "1", { exact: true }));
+    expect(error.code).toBe("NOT_FOUND");
+    expect(error.hint).toContain("Destructive actions need the exact name or the ID.");
+  });
+});
+
+describe("channel versus thread precedence", () => {
+  it("lets a thread with the exact name beat a channel that only contains it", async () => {
+    const { rest } = fakeRest({
+      "/channels": [{ id: "300000000000000010", name: "bug-report-archive", type: 0 }],
+      "/threads/active": { threads: [{ id: "400000000000000010", name: "bug-report", type: 11 }] },
+    });
+    await expect(new Resolver(rest, config()).channelId("bug-report", "1")).resolves.toBe("400000000000000010");
+  });
+
+  it("does not fetch threads when a channel matches exactly", async () => {
+    const { rest, calls } = fakeRest({ "/channels": CHANNELS, "/threads/active": { threads: [] } });
+    await new Resolver(rest, config()).channelId("general", "1");
+
+    expect(calls.some((route) => route.includes("/threads/active"))).toBe(false);
+  });
+});
+
+describe("gateway cache maintenance", () => {
+  it("GUILD_CREATE clears the guild list so a new server resolves by name", async () => {
+    let listed: unknown[] = GUILDS;
+    const get = vi.fn(async () => listed);
+    const resolver = new Resolver({ get } as unknown as DiscordRest, config());
+
+    await resolver.guildId("TestPlace");
+
+    listed = [...GUILDS, { id: "333333333333333333", name: "New Server" }];
+    resolver.applyDispatch({
+      t: "GUILD_CREATE",
+      d: { id: "333333333333333333", name: "New Server", channels: [], roles: [] },
+    } as never);
+
+    await expect(resolver.guildId("New Server")).resolves.toBe("333333333333333333");
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["THREAD_LIST_SYNC", { guild_id: "1", threads: [] }],
+    ["THREAD_UPDATE", { id: "400000000000000001", guild_id: "1", type: 11, name: "x" }],
+  ])("%s drops the cached active-thread listing", async (t, d) => {
+    const { rest, calls } = fakeRest({ "/threads/active": { threads: [] } });
+    const resolver = new Resolver(rest, config());
+
+    await resolver.threads("1");
+    resolver.applyDispatch({ t, d } as never);
+    await resolver.threads("1");
+
+    expect(calls.filter((route) => route.includes("/threads/active"))).toHaveLength(2);
+  });
+});
+
+describe("empty names", () => {
+  it("refuses a bare # or @ instead of matching every channel", async () => {
+    const { rest } = fakeRest({ "/channels": CHANNELS, "/threads/active": { threads: [] } });
+    const resolver = new Resolver(rest, config());
+
+    expect((await toolErrorOf(() => resolver.channelId("#", "1"))).code).toBe("NOT_FOUND");
+  });
+
+  it("refuses a bare @ as a role", async () => {
+    const { rest } = fakeRest({ "/roles": [{ id: "600000000000000001", name: "Moderators" }] });
+    expect((await toolErrorOf(() => new Resolver(rest, config()).roleId("@", "1"))).code).toBe("NOT_FOUND");
+  });
+});
+
+describe("mention kinds", () => {
+  it("roleId rejects a user or channel mention", async () => {
+    const resolver = new Resolver(fakeRest({}).rest, config());
+
+    expect((await toolErrorOf(() => resolver.roleId("<@700000000000000001>", "1"))).code).toBe("INVALID_ARGS");
+    expect((await toolErrorOf(() => resolver.roleId("<#300000000000000001>", "1"))).code).toBe("INVALID_ARGS");
+    await expect(resolver.roleId("<@&600000000000000001>", "1")).resolves.toBe("600000000000000001");
+  });
+
+  it("channelId rejects a user mention", async () => {
+    const resolver = new Resolver(fakeRest({}).rest, config());
+    expect((await toolErrorOf(() => resolver.channelId("<@700000000000000001>", "1"))).code).toBe("INVALID_ARGS");
+  });
+});
+
+describe("DM channel single-flight", () => {
+  it("opens one DM channel for concurrent callers", async () => {
+    const post = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return { id: "800000000000000001" };
+    });
+    const resolver = new Resolver({ post } as unknown as DiscordRest, config());
+
+    const ids = await Promise.all(Array.from({ length: 5 }, () => resolver.dmChannel("900000000000000001")));
+
+    expect(ids.every((id) => id === "800000000000000001")).toBe(true);
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not pin a failed DM open", async () => {
+    let attempt = 0;
+    const post = vi.fn(async () => {
+      attempt += 1;
+      if (attempt === 1) throw new Error("blip");
+      return { id: "800000000000000001" };
+    });
+    const resolver = new Resolver({ post } as unknown as DiscordRest, config());
+
+    await expect(resolver.dmChannel("900000000000000001")).rejects.toThrow("blip");
+    await expect(resolver.dmChannel("900000000000000001")).resolves.toBe("800000000000000001");
+    expect(post).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("channel guild consistency", () => {
+  it("refuses a channel ID already known to belong to another server", async () => {
+    const resolver = new Resolver(fakeRest({}).rest, config());
+    resolver.upsertChannel("2", { id: "300000000000000009", name: "elsewhere", type: 0 } as never);
+
+    const error = await toolErrorOf(() => resolver.channelId("<#300000000000000009>", "1"));
+    expect(error.code).toBe("WRONG_GUILD");
+  });
+
+  it("accepts the channel ID for its own server", async () => {
+    const resolver = new Resolver(fakeRest({}).rest, config());
+    resolver.upsertChannel("1", { id: "300000000000000009", name: "here", type: 0 } as never);
+
+    await expect(resolver.channelId("300000000000000009", "1")).resolves.toBe("300000000000000009");
+  });
+
+  it("makes no request for an unknown channel ID", async () => {
+    const { rest, calls } = fakeRest({});
+    await expect(new Resolver(rest, config()).channelId("300000000000000009", "1")).resolves.toBe(
+      "300000000000000009",
+    );
+    expect(calls).toHaveLength(0);
   });
 });
