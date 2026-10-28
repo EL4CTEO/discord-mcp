@@ -46,6 +46,7 @@ const TEXTUAL_TYPES = new Set<ChannelType>([
   ChannelType.PrivateThread,
   ChannelType.AnnouncementThread,
   ChannelType.GuildVoice,
+  ChannelType.GuildStageVoice,
 ]);
 
 /** Discord refuses bulk deletes of anything older than this. */
@@ -734,7 +735,8 @@ export const searchMessages = defineTool({
     const [scope, authorId] = await Promise.all([
       args.channels
         ? Promise.all(args.channels.map((c) => ctx.resolver.channelId(c, guildId))).then((targets) => ({
-            targets,
+            // "general" and its ID are the same channel; scanning it twice would double its hits.
+            targets: [...new Set(targets)],
             skipped: 0,
           }))
         : defaultSearchTargets(ctx, guildId),
@@ -757,7 +759,7 @@ export const searchMessages = defineTool({
               (authorId === undefined || m.author.id === authorId) &&
               searchableText(m).toLowerCase().includes(needle),
           )
-          .map((m): CompactMessage & { channel_id: string } => ({ channel_id: channelId, ...formatMessage(m, args.detail) }));
+          .map((message) => ({ channelId, message }));
       },
       { signal: ctx.signal },
     );
@@ -765,8 +767,14 @@ export const searchMessages = defineTool({
     const hits = scans.flatMap((r) => (r.ok ? r.value : []));
     const unreadable = scans.filter((r) => !r.ok).length;
 
-    hits.sort((a, b) => compareSnowflakes(b.id, a.id));
-    const trimmed = hits.slice(0, args.max_results);
+    // Only the hits that are returned get formatted.
+    hits.sort((a, b) => compareSnowflakes(b.message.id, a.message.id));
+    const trimmed = hits
+      .slice(0, args.max_results)
+      .map(({ channelId, message }): CompactMessage & { channel_id: string } => ({
+        channel_id: channelId,
+        ...formatMessage(message, args.detail),
+      }));
 
     const unreadableNote = unreadable > 0 ? ` ${plural(unreadable, "channel")} could not be read and were skipped.` : "";
     const unsearchedNote =

@@ -88,7 +88,9 @@ export const listChannels = defineTool({
     const threadsByParent = new Map<string, APIThreadChannel[]>();
     for (const thread of threads) {
       const key = thread.parent_id ?? "";
-      threadsByParent.set(key, [...(threadsByParent.get(key) ?? []), thread]);
+      const siblings = threadsByParent.get(key);
+      if (siblings) siblings.push(thread);
+      else threadsByParent.set(key, [thread]);
     }
 
     // Uncategorised channels first, then each category followed by its children.
@@ -583,9 +585,12 @@ export const setChannelPermissions = defineTool({
       });
     }
 
+    // The channel was just read fresh, so the change folds into the cache instead of forcing a relisting.
+    const others = overwritesOf(channel).filter((o) => o.id !== target.id);
+
     if (args.mode === "reset") {
       await ctx.rest.delete(route, args.reason);
-      ctx.resolver.invalidateChannels(guildId);
+      ctx.resolver.upsertChannel(guildId, { ...channel, permission_overwrites: others } as APIChannel);
       return {
         summary: `Removed the overwrite for ${args.target} on channel ${channelId}; it now inherits.`,
         data: { channel_id: channelId, target: args.target, target_id: target.id, allow: [], deny: [] },
@@ -597,7 +602,13 @@ export const setChannelPermissions = defineTool({
       { type: target.type, allow: allowBits.toString(), deny: denyBits.toString() },
       args.reason,
     );
-    ctx.resolver.invalidateChannels(guildId);
+    const overwrite: APIOverwrite = {
+      id: target.id,
+      type: target.type,
+      allow: allowBits.toString(),
+      deny: denyBits.toString(),
+    };
+    ctx.resolver.upsertChannel(guildId, { ...channel, permission_overwrites: [...others, overwrite] } as APIChannel);
 
     const parts = [
       args.allow?.length ? `allowed ${args.allow.join(", ")}` : undefined,

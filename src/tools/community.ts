@@ -1062,7 +1062,7 @@ export const manageEmojis = defineTool({
         { name: args.name, image, roles },
         args.reason,
       );
-      ctx.resolver.invalidate(guildId);
+      ctx.resolver.upsertEmoji(guildId, emoji);
       return { summary: `Added emoji :${emoji.name}: (${emoji.id}).`, data: formatEmoji(emoji) };
     }
 
@@ -1076,7 +1076,7 @@ export const manageEmojis = defineTool({
         { name: args.name },
         args.reason,
       );
-      ctx.resolver.invalidate(guildId);
+      ctx.resolver.upsertEmoji(guildId, emoji);
       return { summary: `Renamed emoji ${target.id} to :${emoji.name}:.`, data: formatEmoji(emoji) };
     }
 
@@ -1084,7 +1084,7 @@ export const manageEmojis = defineTool({
     if (!args.emoji) throw new ToolError("`emoji` is required to delete an emoji.", { code: "MISSING_ARG" });
     const target = await emojiOf(ctx, guildId, args.emoji);
     await ctx.rest.delete(Routes.guildEmoji(guildId, target.id), args.reason);
-    ctx.resolver.invalidate(guildId);
+    ctx.resolver.removeEmoji(guildId, target.id);
     return { summary: `Deleted emoji ${target.id}${target.name ? ` (:${target.name}:)` : ""}.` };
   },
 });

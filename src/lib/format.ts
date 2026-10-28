@@ -250,15 +250,23 @@ export interface CompactRole {
   name: string;
   position: number;
   color?: string;
+  secondary_color?: string;
   hoisted?: boolean;
   mentionable?: boolean;
   managed?: boolean;
   permissions?: string[];
 }
 
+function hex(colour: number): string {
+  return `#${colour.toString(16).padStart(6, "0")}`;
+}
+
 export function formatRole(role: APIRole, detail: Detail = "compact"): CompactRole {
   const out: CompactRole = { id: role.id, name: role.name, position: role.position };
-  if (role.color !== 0) out.color = `#${role.color.toString(16).padStart(6, "0")}`;
+  // `color` is deprecated in favour of `colors`, which also carries gradient roles.
+  const primary = role.colors?.primary_color ?? role.color;
+  if (primary) out.color = hex(primary);
+  if (role.colors?.secondary_color) out.secondary_color = hex(role.colors.secondary_color);
   if (role.hoist) out.hoisted = true;
   if (role.mentionable) out.mentionable = true;
   if (role.managed) out.managed = true;

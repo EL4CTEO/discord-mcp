@@ -205,6 +205,33 @@ describe("Resolver extras", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("keeps an edited thread out of the top-level channel listing", async () => {
+    const { rest, calls } = fakeRest({ "/threads/active": { threads: [] }, "/channels": CHANNELS });
+    const resolver = new Resolver(rest, config());
+
+    await resolver.channels("1");
+    await resolver.threads("1");
+    resolver.upsertChannel("1", { id: "300000000000000010", name: "renamed-thread", type: 11 } as never);
+
+    expect((await resolver.channels("1")).some((c) => c.id === "300000000000000010")).toBe(false);
+    // The thread listing is dropped so the rename is picked up on the next read.
+    await resolver.threads("1");
+    expect(calls.filter((c) => c.includes("/threads/active"))).toHaveLength(2);
+  });
+
+  it("folds emoji changes into the cached listing", async () => {
+    const { rest, calls } = fakeRest({ "/emojis": [{ id: "500000000000000001", name: "old" }] });
+    const resolver = new Resolver(rest, config());
+
+    await resolver.emojis("1");
+    resolver.upsertEmoji("1", { id: "500000000000000001", name: "renamed" } as never);
+    resolver.upsertEmoji("1", { id: "500000000000000002", name: "added" } as never);
+    resolver.removeEmoji("1", "500000000000000001");
+
+    expect((await resolver.emojis("1")).map((e) => e.name)).toEqual(["added"]);
+    expect(calls).toHaveLength(1);
+  });
+
   it("applies live channel deletes from the gateway", async () => {
     const { rest } = fakeRest({ "/channels": CHANNELS, "/threads/active": { threads: [] } });
     const resolver = new Resolver(rest, config());

@@ -1,6 +1,6 @@
 {
   "name": "@el4cteo/discord-mcp",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "MCP server that lets AI agents run a Discord bot: messages, DMs, channels, threads, roles, members, moderation, live events and bulk operations.",
   "type": "module",
   "license": "MIT",
@@ -46,15 +46,15 @@
   "dependencies": {
     "@discordjs/rest": "^2.6.3",
     "@discordjs/ws": "^2.0.4",
-    "@modelcontextprotocol/sdk": "^1.32.1",
-    "discord-api-types": "^0.38.56",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "discord-api-types": "^0.38.57",
     "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.4"
+    "vitest": "^5.0.5"
   },
   "author": "EL4CTEO",
   "homepage": "https://github.com/EL4CTEO/discord-mcp#readme",

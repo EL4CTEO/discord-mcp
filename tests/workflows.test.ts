@@ -21,6 +21,7 @@ const resolver = {
   memberId: async () => USER,
   channelGuildId: async () => GUILD,
   invalidateChannels: () => undefined,
+  upsertChannel: () => undefined,
 };
 
 describe("discord_manage_member_roles", () => {

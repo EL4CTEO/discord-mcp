@@ -25,7 +25,8 @@ function resolverStub(overrides: Record<string, unknown> = {}) {
     roleNames: vi.fn(async () => new Map([[ROLE_ID, "Moderator"]])),
     channels: vi.fn(async () => []),
     emojis: vi.fn(async () => []),
-    invalidate: vi.fn(),
+    upsertEmoji: vi.fn(),
+    removeEmoji: vi.fn(),
     ...overrides,
   };
 }
@@ -545,7 +546,7 @@ describe("discord_manage_emojis", () => {
       image: `data:image/gif;base64,${bytes.toString("base64")}`,
       roles: [ROLE_ID],
     });
-    expect(resolver.invalidate).toHaveBeenCalledWith(GUILD);
+    expect(resolver.upsertEmoji).toHaveBeenCalledWith(GUILD, expect.objectContaining({ id: EMOJI_ID }));
   });
 
   it("delete is refused when destructive actions are off", async () => {
@@ -570,7 +571,7 @@ describe("discord_manage_emojis", () => {
     await registry.run("discord_manage_emojis", { action: "delete", emoji: "PARTY" });
 
     expect(calls.find((c) => c.method === "DELETE")?.route).toBe(`/guilds/${GUILD}/emojis/${EMOJI_ID}`);
-    expect(resolver.invalidate).toHaveBeenCalledWith(GUILD);
+    expect(resolver.removeEmoji).toHaveBeenCalledWith(GUILD, EMOJI_ID);
   });
 });
 

@@ -216,6 +216,19 @@ describe("GatewayBridge", () => {
     expect(event?.user_id).toBeUndefined();
   });
 
+  it("records an invite's creator as the event's user", () => {
+    const g = gateway();
+    g.ingest({
+      t: "INVITE_CREATE",
+      op: 0,
+      s: 3,
+      d: { guild_id: "g1", channel_id: "c1", code: "abc123", inviter: { id: "u5", username: "carol" } },
+    } as unknown as GatewayDispatchPayload);
+
+    const [event] = g.recent({ limit: 10 });
+    expect(event).toMatchObject({ user: "carol", user_id: "u5", summary: "invite abc123 created by carol" });
+  });
+
   it("collapses line breaks and runs of whitespace in summaries, but not in content", () => {
     const g = gateway();
     g.ingest(message("line one\n\nline\ttwo"));

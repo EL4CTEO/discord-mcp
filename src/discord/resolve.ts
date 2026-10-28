@@ -11,7 +11,7 @@ import type {
 } from "discord-api-types/v10";
 import type { Config } from "../config.js";
 import { ToolError } from "../lib/errors.js";
-import { channelTypeName } from "../lib/format.js";
+import { channelTypeName, THREAD_TYPES } from "../lib/format.js";
 import { TtlCache } from "./cache.js";
 import type { DiscordRest } from "./rest.js";
 
@@ -502,6 +502,12 @@ export class Resolver {
 
   upsertChannel(guildId: string, channel: APIChannel): void {
     this.#channelGuild.set(channel.id, guildId);
+    // Threads live in their own listing. Folding one into the channel listing
+    // would surface it as a top-level channel in listings, reorders and searches.
+    if (THREAD_TYPES.includes(channel.type)) {
+      this.#threads.delete(guildId);
+      return;
+    }
     this.#channels.update(guildId, (list) => upsert(list, channel));
   }
 
@@ -516,6 +522,14 @@ export class Resolver {
 
   removeRole(guildId: string, roleId: string): void {
     this.#roles.update(guildId, (list) => list.filter((r) => r.id !== roleId));
+  }
+
+  upsertEmoji(guildId: string, emoji: APIEmoji): void {
+    this.#emojis.update(guildId, (list) => upsertBy(list, emoji, (e) => e.id));
+  }
+
+  removeEmoji(guildId: string, emojiId: string): void {
+    this.#emojis.update(guildId, (list) => list.filter((e) => e.id !== emojiId));
   }
 
   /** Replaces the whole role listing, e.g. with the result of a reorder. */
@@ -604,7 +618,12 @@ export class Resolver {
 
 /** Returns a new list with `item` replacing the entry of the same id, or appended. */
 function upsert<T extends { id: string }>(list: readonly T[], item: T): T[] {
-  const index = list.findIndex((entry) => entry.id === item.id);
+  return upsertBy(list, item, (entry) => entry.id);
+}
+
+function upsertBy<T>(list: readonly T[], item: T, key: (entry: T) => unknown): T[] {
+  const id = key(item);
+  const index = list.findIndex((entry) => key(entry) === id);
   if (index === -1) return [...list, item];
   const next = [...list];
   next[index] = item;

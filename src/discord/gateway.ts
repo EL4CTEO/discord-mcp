@@ -569,7 +569,8 @@ function within<T>(work: () => T | PromiseLike<T>, deadline: number): Promise<{ 
 /** Who caused an event, from whichever field that dispatch uses. */
 function actor(data: Record<string, unknown>): { id: string; name: string } | undefined {
   const member = data["member"] as { user?: unknown } | undefined;
-  const candidate = data["author"] ?? data["user"] ?? member?.user;
+  // INVITE_CREATE names its creator `inviter`.
+  const candidate = data["author"] ?? data["user"] ?? member?.user ?? data["inviter"];
   if (!candidate || typeof candidate !== "object") return undefined;
 
   const user = candidate as { id?: unknown; username?: unknown; global_name?: unknown };
