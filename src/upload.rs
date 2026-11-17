@@ -176,12 +176,20 @@ fn comparable(p: &Path) -> Vec<String> {
         .collect()
 }
 
-fn inside_any(file: &Path, roots: &[String]) -> bool {
+/// Whether `file` sits inside one of `roots`. With `literal`, a root also
+/// counts as written (resolved but not followed), so the pre-check on a path
+/// as typed is not fooled by a symlinked or 8.3-short-named root (macOS
+/// `/var` -> `/private/var`, Windows `RUNNER~1`). The check that decides is the
+/// one on the real file path, against the real root.
+fn inside_any(file: &Path, roots: &[String], literal: bool) -> bool {
     let file = comparable(file);
+    let under = |root: &Path| {
+        let root = comparable(root);
+        file.len() >= root.len() && file[..root.len()] == root[..]
+    };
     roots.iter().any(|root| {
         let real_root = dunce::canonicalize(root).unwrap_or_else(|_| resolve(root));
-        let root = comparable(&real_root);
-        file.len() >= root.len() && file[..root.len()] == root[..]
+        under(&real_root) || (literal && under(&resolve(root)))
     })
 }
 
@@ -221,7 +229,7 @@ async fn load_path(path: &str, roots: Option<&[String]>, limit: u64) -> Result<L
     // Checked on the literal path first, so nothing outside the roots is even probed;
     // then again after resolving symlinks.
     if let Some(roots) = roots
-        && !inside_any(&resolve(path), roots)
+        && !inside_any(&resolve(path), roots, true)
     {
         return Err(outside());
     }
@@ -239,7 +247,7 @@ async fn load_path(path: &str, roots: Option<&[String]>, limit: u64) -> Result<L
     };
 
     if let Some(roots) = roots
-        && !inside_any(&real, roots)
+        && !inside_any(&real, roots, false)
     {
         return Err(outside());
     }
