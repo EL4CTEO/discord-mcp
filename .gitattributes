@@ -1,2 +1,6 @@
 * text=auto eol=lf
 *.png binary
+
+# GitHub's language panel reports Rust for this repository (see src/). The npm
+# launcher and build scripts are small Node shims; the old TypeScript tree is gone.
+*.rs linguist-detectable=true
