@@ -1,6 +1,6 @@
 {
   "name": "@el4cteo/discord-mcp",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "MCP server that lets AI agents run a Discord bot: messages, DMs, channels, threads, roles, members, moderation, live events and bulk operations. Native Rust binary.",
   "license": "MIT",
   "bin": {
@@ -16,11 +16,11 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "@el4cteo/discord-mcp-win32-x64": "1.5.1",
-    "@el4cteo/discord-mcp-linux-x64": "1.5.1",
-    "@el4cteo/discord-mcp-linux-arm64": "1.5.1",
-    "@el4cteo/discord-mcp-darwin-x64": "1.5.1",
-    "@el4cteo/discord-mcp-darwin-arm64": "1.5.1"
+    "@el4cteo/discord-mcp-win32-x64": "1.5.2",
+    "@el4cteo/discord-mcp-linux-x64": "1.5.2",
+    "@el4cteo/discord-mcp-linux-arm64": "1.5.2",
+    "@el4cteo/discord-mcp-darwin-x64": "1.5.2",
+    "@el4cteo/discord-mcp-darwin-arm64": "1.5.2"
   },
   "keywords": [
     "mcp",
