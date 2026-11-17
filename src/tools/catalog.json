@@ -1,0 +1,3573 @@
+[
+ {
+  "name": "discord_whoami",
+  "title": "Show the bot's own identity and setup",
+  "description": "Reports which bot account the token belongs to, which servers it can reach, and the safety settings: destructive actions, @everyone pings and where files may be uploaded from.\n\nRun this first to verify the server is configured correctly, or when a tool behaves unexpectedly.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {},
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Show the bot's own identity and setup",
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_list_guilds",
+  "title": "List servers the bot is in",
+  "description": "Lists every server the bot has been invited to, with member counts.\n\nCall this first when you are unsure which server to act on, or when another tool reports that the `guild` argument is ambiguous.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "detail": {
+     "default": "compact",
+     "description": "compact returns only commonly needed fields (default, cheaper); full includes extra metadata.",
+     "type": "string",
+     "enum": [
+      "compact",
+      "full"
+     ]
+    }
+   },
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "List servers the bot is in",
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_get_guild",
+  "title": "Get server details",
+  "description": "Returns an overview of one server: name, owner, member counts, creation date, enabled features, and how many channels and roles it has.\n\nUseful as a first orientation step before doing anything else in an unfamiliar server.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "guild": {
+     "description": "Or an array of up to 50, run in parallel with per-item results.",
+     "anyOf": [
+      {
+       "type": "string",
+       "minLength": 1
+      },
+      {
+       "minItems": 1,
+       "maxItems": 50,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1
+       }
+      }
+     ]
+    },
+    "detail": {
+     "default": "compact",
+     "description": "compact returns only commonly needed fields (default, cheaper); full includes extra metadata.",
+     "type": "string",
+     "enum": [
+      "compact",
+      "full"
+     ]
+    }
+   },
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Get server details",
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_list_channels",
+  "title": "List server channels",
+  "description": "Lists every channel in a server in the order Discord shows them, each tagged with its category.\n\nStart here when you need a channel id or want to see how a server is organised. Filter with `type`; set include_threads to also list active threads.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "type": {
+     "default": "all",
+     "description": "Restrict results to one channel type.",
+     "type": "string",
+     "enum": [
+      "text",
+      "voice",
+      "category",
+      "announcement",
+      "stage",
+      "forum",
+      "media",
+      "all"
+     ]
+    },
+    "include_threads": {
+     "default": false,
+     "description": "Also list active threads under their parent.",
+     "type": "boolean"
+    },
+    "detail": {
+     "default": "compact",
+     "description": "compact returns only commonly needed fields (default, cheaper); full includes extra metadata.",
+     "type": "string",
+     "enum": [
+      "compact",
+      "full"
+     ]
+    }
+   },
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "List server channels",
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_create_channel",
+  "title": "Create a channel",
+  "description": "Creates a text, voice, category, announcement, stage, forum or media channel.\n\nNest it with `category` (create the category first if needed). `permissions` sets overwrites in the same request - e.g. a private staff channel: [{target:'@everyone', deny:['ViewChannel']}, {target:'Moderator', allow:['ViewChannel']}]. Without `permissions` a channel inside a category inherits the category's permissions.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "name": {
+     "anyOf": [
+      {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 100
+      },
+      {
+       "minItems": 1,
+       "maxItems": 50,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100
+       }
+      }
+     ],
+     "description": "Channel name. Discord lowercases and hyphenates text channel names. Or an array of up to 50, run in parallel with per-item results."
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "type": {
+     "default": "text",
+     "type": "string",
+     "enum": [
+      "text",
+      "voice",
+      "category",
+      "announcement",
+      "stage",
+      "forum",
+      "media"
+     ]
+    },
+    "category": {
+     "description": "Parent category to place this channel in.",
+     "type": "string",
+     "minLength": 1
+    },
+    "topic": {
+     "description": "Channel topic / description. Up to 1024 characters, or 4096 for forum and media channels.",
+     "type": "string",
+     "maxLength": 4096
+    },
+    "nsfw": {
+     "type": "boolean"
+    },
+    "slowmode_seconds": {
+     "description": "Per-user rate limit, 0 to disable.",
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 21600
+    },
+    "user_limit": {
+     "description": "Voice only: max members, 0 for unlimited. Up to 99, or 10000 for stage channels.",
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 10000
+    },
+    "position": {
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 9007199254740991
+    },
+    "permissions": {
+     "description": "Permission overwrites to apply on creation.",
+     "maxItems": 50,
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "target": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Role or member. Use '@everyone' for the default role."
+       },
+       "target_type": {
+        "default": "auto",
+        "description": "Whether `target` is a role or a member. 'auto' tries a role first, then a member.",
+        "type": "string",
+        "enum": [
+         "auto",
+         "role",
+         "member"
+        ]
+       },
+       "allow": {
+        "maxItems": 41,
+        "type": "array",
+        "items": {
+         "type": "string",
+         "enum": [
+          "ViewChannel",
+          "SendMessages",
+          "SendTTSMessages",
+          "SendMessagesInThreads",
+          "CreatePublicThreads",
+          "CreatePrivateThreads",
+          "ManageThreads",
+          "EmbedLinks",
+          "AttachFiles",
+          "AddReactions",
+          "UseExternalEmojis",
+          "UseExternalStickers",
+          "MentionEveryone",
+          "ManageMessages",
+          "PinMessages",
+          "ReadMessageHistory",
+          "SendPolls",
+          "UseApplicationCommands",
+          "ManageChannels",
+          "ManageRoles",
+          "ManageWebhooks",
+          "ManageEvents",
+          "CreateEvents",
+          "CreateGuildExpressions",
+          "UseExternalApps",
+          "BypassSlowmode",
+          "CreateInstantInvite",
+          "Connect",
+          "Speak",
+          "SendVoiceMessages",
+          "Stream",
+          "UseEmbeddedActivities",
+          "UseSoundboard",
+          "UseExternalSounds",
+          "UseVAD",
+          "RequestToSpeak",
+          "PrioritySpeaker",
+          "SetVoiceChannelStatus",
+          "MuteMembers",
+          "DeafenMembers",
+          "MoveMembers"
+         ]
+        },
+        "description": "Permission names, e.g. [\"ViewChannel\",\"SendMessages\"]."
+       },
+       "deny": {
+        "maxItems": 41,
+        "type": "array",
+        "items": {
+         "type": "string",
+         "enum": [
+          "ViewChannel",
+          "SendMessages",
+          "SendTTSMessages",
+          "SendMessagesInThreads",
+          "CreatePublicThreads",
+          "CreatePrivateThreads",
+          "ManageThreads",
+          "EmbedLinks",
+          "AttachFiles",
+          "AddReactions",
+          "UseExternalEmojis",
+          "UseExternalStickers",
+          "MentionEveryone",
+          "ManageMessages",
+          "PinMessages",
+          "ReadMessageHistory",
+          "SendPolls",
+          "UseApplicationCommands",
+          "ManageChannels",
+          "ManageRoles",
+          "ManageWebhooks",
+          "ManageEvents",
+          "CreateEvents",
+          "CreateGuildExpressions",
+          "UseExternalApps",
+          "BypassSlowmode",
+          "CreateInstantInvite",
+          "Connect",
+          "Speak",
+          "SendVoiceMessages",
+          "Stream",
+          "UseEmbeddedActivities",
+          "UseSoundboard",
+          "UseExternalSounds",
+          "UseVAD",
+          "RequestToSpeak",
+          "PrioritySpeaker",
+          "SetVoiceChannelStatus",
+          "MuteMembers",
+          "DeafenMembers",
+          "MoveMembers"
+         ]
+        },
+        "description": "Permission names, e.g. [\"ViewChannel\",\"SendMessages\"]."
+       }
+      },
+      "required": [
+       "target"
+      ]
+     }
+    },
+    "reason": {
+     "description": "Reason recorded in the audit log.",
+     "type": "string",
+     "maxLength": 512
+    }
+   },
+   "required": [
+    "name"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Create a channel",
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_edit_channel",
+  "title": "Edit a channel",
+  "description": "Updates a channel's settings; only the fields you pass change.\n\nRename, set a topic, toggle NSFW, change slowmode or voice user limit, or move it: `category` moves it under a category, `category: null` moves it to the top level.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "channel": {
+     "anyOf": [
+      {
+       "type": "string",
+       "minLength": 1
+      },
+      {
+       "minItems": 1,
+       "maxItems": 50,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1
+       }
+      }
+     ],
+     "description": "Channel or thread: name ('general'), #mention or ID. Or an array of up to 50, run in parallel with per-item results."
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "name": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 100
+    },
+    "topic": {
+     "description": "New topic; '' clears it. Up to 1024 characters, or 4096 for forum and media channels.",
+     "type": "string",
+     "maxLength": 4096
+    },
+    "nsfw": {
+     "type": "boolean"
+    },
+    "slowmode_seconds": {
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 21600
+    },
+    "user_limit": {
+     "description": "Voice only. Up to 99, or 10000 for stage channels.",
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 10000
+    },
+    "position": {
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 9007199254740991
+    },
+    "category": {
+     "description": "Move under this category, or null for the top level.",
+     "anyOf": [
+      {
+       "type": "string",
+       "minLength": 1,
+       "description": "Channel or thread: name ('general'), #mention or ID."
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "sync_permissions": {
+     "description": "When moving, adopt the new category's permissions.",
+     "type": "boolean"
+    },
+    "reason": {
+     "description": "Reason recorded in the audit log.",
+     "type": "string",
+     "maxLength": 512
+    }
+   },
+   "required": [
+    "channel"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Edit a channel",
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_delete_channel",
+  "title": "Delete a channel",
+  "description": "Permanently deletes a channel or thread and all of its messages. Cannot be undone.\n\nDeleting a category does NOT delete the channels inside it; they move to the top level.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "channel": {
+     "anyOf": [
+      {
+       "type": "string",
+       "minLength": 1
+      },
+      {
+       "minItems": 1,
+       "maxItems": 50,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1
+       }
+      }
+     ],
+     "description": "Channel or thread: name ('general'), #mention or ID. Or an array of up to 50, run in parallel with per-item results."
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "reason": {
+     "description": "Reason recorded in the audit log.",
+     "type": "string",
+     "maxLength": 512
+    }
+   },
+   "required": [
+    "channel"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Delete a channel",
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": true,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_manage_thread",
+  "title": "Create or manage a thread or forum post",
+  "description": "Creates threads and changes their state.\n\n- create: in a text channel pass `message_id` to branch off a message, or omit it for a standalone thread. In a forum channel this creates a post and `content` is its required first message.\n- archive / unarchive / lock / unlock: change an existing thread's state.\n- list: active threads in the server, or only under `channel` if given.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "action": {
+     "type": "string",
+     "enum": [
+      "create",
+      "archive",
+      "unarchive",
+      "lock",
+      "unlock",
+      "list"
+     ]
+    },
+    "channel": {
+     "description": "Parent channel for create/list; the thread itself for state changes.",
+     "type": "string",
+     "minLength": 1
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "name": {
+     "description": "Thread name. Required for create.",
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 100
+    },
+    "content": {
+     "description": "First message. Required for forum posts.",
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 2000
+    },
+    "message_id": {
+     "description": "Branch the thread off this message (create only).",
+     "type": "string",
+     "pattern": "^\\d{17,20}$"
+    },
+    "auto_archive_minutes": {
+     "default": 1440,
+     "description": "Idle time before Discord auto-archives the thread: 60, 1440, 4320 or 10080 minutes.",
+     "anyOf": [
+      {
+       "type": "number",
+       "const": 60
+      },
+      {
+       "type": "number",
+       "const": 1440
+      },
+      {
+       "type": "number",
+       "const": 4320
+      },
+      {
+       "type": "number",
+       "const": 10080
+      }
+     ]
+    },
+    "private": {
+     "default": false,
+     "description": "Create a private thread (create only, text channels).",
+     "type": "boolean"
+    },
+    "reason": {
+     "description": "Reason recorded in the audit log.",
+     "type": "string",
+     "maxLength": 512
+    }
+   },
+   "required": [
+    "action"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Create or manage a thread or forum post",
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_set_channel_permissions",
+  "title": "Set channel permission overwrites",
+  "description": "Grants or denies permissions for one role or member on a channel.\n\n- Read-only for everyone: target='@everyone', deny=['SendMessages','AddReactions','CreatePublicThreads']\n- Private channel: target='@everyone', deny=['ViewChannel'], then allow ViewChannel for the role that should see it\n\nmode='merge' (default) changes only the listed permissions and keeps the rest of the existing overwrite; 'replace' makes allow/deny the whole overwrite; 'reset' removes the overwrite so everything inherits again.\n\nA deny on @everyone applies to the bot too - grant the bot's role what it still needs there.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "channel": {
+     "anyOf": [
+      {
+       "type": "string",
+       "minLength": 1
+      },
+      {
+       "minItems": 1,
+       "maxItems": 50,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1
+       }
+      }
+     ],
+     "description": "Channel or thread: name ('general'), #mention or ID. Or an array of up to 50, run in parallel with per-item results."
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "target": {
+     "anyOf": [
+      {
+       "type": "string",
+       "minLength": 1
+      },
+      {
+       "minItems": 1,
+       "maxItems": 50,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1
+       }
+      }
+     ],
+     "description": "Role or member to overwrite. Use '@everyone' for the default role. Or an array of up to 50, run in parallel with per-item results."
+    },
+    "target_type": {
+     "default": "auto",
+     "description": "Whether `target` is a role or a member. 'auto' tries a role first, then a member.",
+     "type": "string",
+     "enum": [
+      "auto",
+      "role",
+      "member"
+     ]
+    },
+    "allow": {
+     "description": "Permissions to explicitly grant.",
+     "maxItems": 41,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "ViewChannel",
+       "SendMessages",
+       "SendTTSMessages",
+       "SendMessagesInThreads",
+       "CreatePublicThreads",
+       "CreatePrivateThreads",
+       "ManageThreads",
+       "EmbedLinks",
+       "AttachFiles",
+       "AddReactions",
+       "UseExternalEmojis",
+       "UseExternalStickers",
+       "MentionEveryone",
+       "ManageMessages",
+       "PinMessages",
+       "ReadMessageHistory",
+       "SendPolls",
+       "UseApplicationCommands",
+       "ManageChannels",
+       "ManageRoles",
+       "ManageWebhooks",
+       "ManageEvents",
+       "CreateEvents",
+       "CreateGuildExpressions",
+       "UseExternalApps",
+       "BypassSlowmode",
+       "CreateInstantInvite",
+       "Connect",
+       "Speak",
+       "SendVoiceMessages",
+       "Stream",
+       "UseEmbeddedActivities",
+       "UseSoundboard",
+       "UseExternalSounds",
+       "UseVAD",
+       "RequestToSpeak",
+       "PrioritySpeaker",
+       "SetVoiceChannelStatus",
+       "MuteMembers",
+       "DeafenMembers",
+       "MoveMembers"
+      ]
+     }
+    },
+    "deny": {
+     "description": "Permissions to explicitly deny.",
+     "maxItems": 41,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "ViewChannel",
+       "SendMessages",
+       "SendTTSMessages",
+       "SendMessagesInThreads",
+       "CreatePublicThreads",
+       "CreatePrivateThreads",
+       "ManageThreads",
+       "EmbedLinks",
+       "AttachFiles",
+       "AddReactions",
+       "UseExternalEmojis",
+       "UseExternalStickers",
+       "MentionEveryone",
+       "ManageMessages",
+       "PinMessages",
+       "ReadMessageHistory",
+       "SendPolls",
+       "UseApplicationCommands",
+       "ManageChannels",
+       "ManageRoles",
+       "ManageWebhooks",
+       "ManageEvents",
+       "CreateEvents",
+       "CreateGuildExpressions",
+       "UseExternalApps",
+       "BypassSlowmode",
+       "CreateInstantInvite",
+       "Connect",
+       "Speak",
+       "SendVoiceMessages",
+       "Stream",
+       "UseEmbeddedActivities",
+       "UseSoundboard",
+       "UseExternalSounds",
+       "UseVAD",
+       "RequestToSpeak",
+       "PrioritySpeaker",
+       "SetVoiceChannelStatus",
+       "MuteMembers",
+       "DeafenMembers",
+       "MoveMembers"
+      ]
+     }
+    },
+    "mode": {
+     "default": "merge",
+     "type": "string",
+     "enum": [
+      "merge",
+      "replace",
+      "reset"
+     ]
+    },
+    "reason": {
+     "description": "Reason recorded in the audit log.",
+     "type": "string",
+     "maxLength": 512
+    }
+   },
+   "required": [
+    "channel",
+    "target"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Set channel permission overwrites",
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_reorder_channels",
+  "title": "Reorder channels or categories",
+  "description": "Sets the top-to-bottom order of channels in one request.\n\nPass categories to order the categories, or channels that share one category to order those. Channels left out keep their place; the listed ones fill the slots they occupied, in the order given.\n\nVoice channels always render below text channels in a category - Discord's rule, not changeable here.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "order": {
+     "minItems": 2,
+     "maxItems": 50,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Channel or thread: name ('general'), #mention or ID."
+     },
+     "description": "Channels or categories, first one appears at the top."
+    },
+    "reason": {
+     "description": "Reason recorded in the audit log.",
+     "type": "string",
+     "maxLength": 512
+    }
+   },
+   "required": [
+    "order"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Reorder channels or categories",
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_send_message",
+  "title": "Send a Discord message",
+  "description": "Posts a message to a channel or thread: text, embeds, file uploads, polls and replies, or forwards an existing message (forward, on its own).\n\n@mentions do NOT ping anyone unless allow_mentions is true, so names are safe in text. Long text is split automatically. Returns the created message and its id.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "channel": {
+     "anyOf": [
+      {
+       "type": "string",
+       "minLength": 1
+      },
+      {
+       "minItems": 1,
+       "maxItems": 50,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1
+       }
+      }
+     ],
+     "description": "Channel or thread: name ('general'), #mention or ID. Or an array of up to 50, run in parallel with per-item results."
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "content": {
+     "description": "Message text. Over 2000 characters it is split into several messages at paragraph/line boundaries, keeping code blocks intact.",
+     "type": "string",
+     "maxLength": 20000
+    },
+    "embeds": {
+     "description": "Up to 10 rich embeds, at most 6000 characters of text across all of them.",
+     "maxItems": 10,
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "title": {
+        "type": "string",
+        "maxLength": 256
+       },
+       "description": {
+        "type": "string",
+        "maxLength": 4096
+       },
+       "url": {
+        "type": "string",
+        "format": "uri"
+       },
+       "color": {
+        "description": "Accent colour as '#5865F2' or an integer.",
+        "anyOf": [
+         {
+          "type": "string",
+          "pattern": "^#?[0-9a-fA-F]{6}$"
+         },
+         {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16777215
+         }
+        ]
+       },
+       "timestamp": {
+        "type": "string",
+        "format": "date-time",
+        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+       },
+       "author": {
+        "type": "object",
+        "properties": {
+         "name": {
+          "type": "string",
+          "maxLength": 256
+         },
+         "url": {
+          "type": "string",
+          "format": "uri"
+         },
+         "icon_url": {
+          "type": "string",
+          "format": "uri"
+         }
+        },
+        "required": [
+         "name"
+        ]
+       },
+       "footer": {
+        "type": "object",
+        "properties": {
+         "text": {
+          "type": "string",
+          "maxLength": 2048
+         },
+         "icon_url": {
+          "type": "string",
+          "format": "uri"
+         }
+        },
+        "required": [
+         "text"
+        ]
+       },
+       "image": {
+        "type": "object",
+        "properties": {
+         "url": {
+          "type": "string",
+          "format": "uri"
+         }
+        },
+        "required": [
+         "url"
+        ]
+       },
+       "thumbnail": {
+        "type": "object",
+        "properties": {
+         "url": {
+          "type": "string",
+          "format": "uri"
+         }
+        },
+        "required": [
+         "url"
+        ]
+       },
+       "fields": {
+        "maxItems": 25,
+        "type": "array",
+        "items": {
+         "type": "object",
+         "properties": {
+          "name": {
+           "type": "string",
+           "maxLength": 256
+          },
+          "value": {
+           "type": "string",
+           "maxLength": 1024
+          },
+          "inline": {
+           "type": "boolean"
+          }
+         },
+         "required": [
+          "name",
+          "value"
+         ]
+        }
+       }
+      },
+      "description": "A rich embed. At least one of title, description or fields should be set."
+     }
+    },
+    "files": {
+     "description": "Up to 10 attachments, from local paths or URLs.",
+     "maxItems": 10,
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "path": {
+        "description": "Absolute local file path to upload (within the permitted upload folders).",
+        "type": "string",
+        "minLength": 1
+       },
+       "url": {
+        "description": "Public http(s) URL to download and re-upload.",
+        "type": "string",
+        "format": "uri"
+       },
+       "name": {
+        "description": "File name shown in Discord. Defaults to the source name.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+       },
+       "spoiler": {
+        "description": "Blur the attachment until clicked.",
+        "type": "boolean"
+       }
+      }
+     }
+    },
+    "poll": {
+     "type": "object",
+     "properties": {
+      "question": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 300
+      },
+      "answers": {
+       "minItems": 1,
+       "maxItems": 10,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 55
+       }
+      },
+      "duration_hours": {
+       "default": 24,
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 768
+      },
+      "multiselect": {
+       "default": false,
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "question",
+      "answers"
+     ],
+     "description": "Attach a native Discord poll."
+    },
+    "allow_mentions": {
+     "default": false,
+     "description": "Whether @mentions in the content actually ping. false (default): nobody is pinged. true: mentioned users and roles are pinged. 'everyone': @everyone and @here ping too.",
+     "anyOf": [
+      {
+       "type": "boolean"
+      },
+      {
+       "type": "string",
+       "const": "everyone"
+      }
+     ]
+    },
+    "silent": {
+     "default": false,
+     "description": "Send without triggering a push notification.",
+     "type": "boolean"
+    },
+    "suppress_embeds": {
+     "description": "Hide link previews.",
+     "type": "boolean"
+    },
+    "reply_to": {
+     "description": "Message ID to reply to.",
+     "type": "string",
+     "pattern": "^\\d{17,20}$"
+    },
+    "forward": {
+     "description": "Forward this message (from channel) into the target channel. Cannot be combined with other content.",
+     "type": "object",
+     "properties": {
+      "channel": {
+       "type": "string",
+       "minLength": 1,
+       "description": "Channel or thread: name ('general'), #mention or ID."
+      },
+      "message_id": {
+       "type": "string",
+       "pattern": "^\\d{17,20}$",
+       "description": "Message ID (17-20 digits)."
+      }
+     },
+     "required": [
+      "channel",
+      "message_id"
+     ]
+    }
+   },
+   "required": [
+    "channel"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Send a Discord message",
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_send_dm",
+  "title": "Send a direct message",
+  "description": "Sends a private DM to a user. The user must share a server with the bot and allow DMs from its members.\n\nAccepts a user ID or @mention, or a member name looked up in `guild`. Same content options as discord_send_message.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "user": {
+     "anyOf": [
+      {
+       "type": "string",
+       "minLength": 1
+      },
+      {
+       "minItems": 1,
+       "maxItems": 50,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1
+       }
+      }
+     ],
+     "description": "Recipient: user ID, @mention, or username/nickname of a server member. Or an array of up to 50, run in parallel with per-item results."
+    },
+    "guild": {
+     "description": "Server to look the name up in. Not needed for an ID.",
+     "type": "string",
+     "minLength": 1
+    },
+    "content": {
+     "description": "Message text. Over 2000 characters it is split into several messages at paragraph/line boundaries, keeping code blocks intact.",
+     "type": "string",
+     "maxLength": 20000
+    },
+    "embeds": {
+     "description": "Up to 10 rich embeds, at most 6000 characters of text across all of them.",
+     "maxItems": 10,
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "title": {
+        "type": "string",
+        "maxLength": 256
+       },
+       "description": {
+        "type": "string",
+        "maxLength": 4096
+       },
+       "url": {
+        "type": "string",
+        "format": "uri"
+       },
+       "color": {
+        "description": "Accent colour as '#5865F2' or an integer.",
+        "anyOf": [
+         {
+          "type": "string",
+          "pattern": "^#?[0-9a-fA-F]{6}$"
+         },
+         {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16777215
+         }
+        ]
+       },
+       "timestamp": {
+        "type": "string",
+        "format": "date-time",
+        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+       },
+       "author": {
+        "type": "object",
+        "properties": {
+         "name": {
+          "type": "string",
+          "maxLength": 256
+         },
+         "url": {
+          "type": "string",
+          "format": "uri"
+         },
+         "icon_url": {
+          "type": "string",
+          "format": "uri"
+         }
+        },
+        "required": [
+         "name"
+        ]
+       },
+       "footer": {
+        "type": "object",
+        "properties": {
+         "text": {
+          "type": "string",
+          "maxLength": 2048
+         },
+         "icon_url": {
+          "type": "string",
+          "format": "uri"
+         }
+        },
+        "required": [
+         "text"
+        ]
+       },
+       "image": {
+        "type": "object",
+        "properties": {
+         "url": {
+          "type": "string",
+          "format": "uri"
+         }
+        },
+        "required": [
+         "url"
+        ]
+       },
+       "thumbnail": {
+        "type": "object",
+        "properties": {
+         "url": {
+          "type": "string",
+          "format": "uri"
+         }
+        },
+        "required": [
+         "url"
+        ]
+       },
+       "fields": {
+        "maxItems": 25,
+        "type": "array",
+        "items": {
+         "type": "object",
+         "properties": {
+          "name": {
+           "type": "string",
+           "maxLength": 256
+          },
+          "value": {
+           "type": "string",
+           "maxLength": 1024
+          },
+          "inline": {
+           "type": "boolean"
+          }
+         },
+         "required": [
+          "name",
+          "value"
+         ]
+        }
+       }
+      },
+      "description": "A rich embed. At least one of title, description or fields should be set."
+     }
+    },
+    "files": {
+     "description": "Up to 10 attachments, from local paths or URLs.",
+     "maxItems": 10,
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "path": {
+        "description": "Absolute local file path to upload (within the permitted upload folders).",
+        "type": "string",
+        "minLength": 1
+       },
+       "url": {
+        "description": "Public http(s) URL to download and re-upload.",
+        "type": "string",
+        "format": "uri"
+       },
+       "name": {
+        "description": "File name shown in Discord. Defaults to the source name.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+       },
+       "spoiler": {
+        "description": "Blur the attachment until clicked.",
+        "type": "boolean"
+       }
+      }
+     }
+    },
+    "poll": {
+     "type": "object",
+     "properties": {
+      "question": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 300
+      },
+      "answers": {
+       "minItems": 1,
+       "maxItems": 10,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 55
+       }
+      },
+      "duration_hours": {
+       "default": 24,
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 768
+      },
+      "multiselect": {
+       "default": false,
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "question",
+      "answers"
+     ],
+     "description": "Attach a native Discord poll."
+    },
+    "allow_mentions": {
+     "default": false,
+     "description": "Whether @mentions in the content actually ping. false (default): nobody is pinged. true: mentioned users and roles are pinged. 'everyone': @everyone and @here ping too.",
+     "anyOf": [
+      {
+       "type": "boolean"
+      },
+      {
+       "type": "string",
+       "const": "everyone"
+      }
+     ]
+    },
+    "silent": {
+     "default": false,
+     "description": "Send without triggering a push notification.",
+     "type": "boolean"
+    },
+    "suppress_embeds": {
+     "description": "Hide link previews.",
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "user"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Send a direct message",
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_read_messages",
+  "title": "Read Discord message history",
+  "description": "Reads recent messages from a channel or thread, newest first (set oldest_first for reading order).\n\nFetches up to 500 by paging automatically. Text is clipped to 500 chars per message in compact mode; detail='full' allows 4000 and includes embed fields.\n\nWithout the MESSAGE CONTENT intent, content is empty for messages the bot did not send.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "channel": {
+     "anyOf": [
+      {
+       "type": "string",
+       "minLength": 1
+      },
+      {
+       "minItems": 1,
+       "maxItems": 50,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1
+       }
+      }
+     ],
+     "description": "Channel or thread: name ('general'), #mention or ID. Or an array of up to 50, run in parallel with per-item results."
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "limit": {
+     "default": 50,
+     "description": "How many messages to fetch (1-500).",
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 500
+    },
+    "before": {
+     "description": "Only messages older than this message ID (paging back).",
+     "type": "string",
+     "pattern": "^\\d{17,20}$"
+    },
+    "after": {
+     "description": "Only messages newer than this message ID.",
+     "type": "string",
+     "pattern": "^\\d{17,20}$"
+    },
+    "around": {
+     "description": "Messages centred on this message ID (max 100).",
+     "type": "string",
+     "pattern": "^\\d{17,20}$"
+    },
+    "from_author": {
+     "description": "Keep only messages from this member (filters the fetched window).",
+     "type": "string",
+     "minLength": 1
+    },
+    "oldest_first": {
+     "default": false,
+     "description": "Return in chronological order.",
+     "type": "boolean"
+    },
+    "detail": {
+     "default": "compact",
+     "description": "compact returns only commonly needed fields (default, cheaper); full includes extra metadata.",
+     "type": "string",
+     "enum": [
+      "compact",
+      "full"
+     ]
+    }
+   },
+   "required": [
+    "channel"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Read Discord message history",
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_search_messages",
+  "title": "Search recent messages",
+  "description": "Searches recent history across channels for text (message content and embed text).\n\nBots cannot use Discord's search index, so this scans the newest per_channel_limit messages of each channel (and active threads) in parallel. For older history page back with discord_read_messages.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "query": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Case-insensitive text to look for."
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "channels": {
+     "description": "Channels to scan. Defaults to the 50 most recently active text channels and threads.",
+     "maxItems": 25,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Channel or thread: name ('general'), #mention or ID."
+     }
+    },
+    "from_author": {
+     "description": "Only match messages by this member.",
+     "type": "string",
+     "minLength": 1
+    },
+    "per_channel_limit": {
+     "default": 100,
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 500
+    },
+    "max_results": {
+     "default": 25,
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 100
+    },
+    "detail": {
+     "default": "compact",
+     "description": "compact returns only commonly needed fields (default, cheaper); full includes extra metadata.",
+     "type": "string",
+     "enum": [
+      "compact",
+      "full"
+     ]
+    }
+   },
+   "required": [
+    "query"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Search recent messages",
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_edit_message",
+  "title": "Edit a Discord message",
+  "description": "Edits a message the bot sent (bots cannot edit other users' messages). Omitted fields stay unchanged; pass embeds: [] to remove all embeds.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "channel": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Channel or thread: name ('general'), #mention or ID."
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "message_id": {
+     "anyOf": [
+      {
+       "type": "string",
+       "pattern": "^\\d{17,20}$"
+      },
+      {
+       "minItems": 1,
+       "maxItems": 50,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "pattern": "^\\d{17,20}$"
+       }
+      }
+     ],
+     "description": "Message ID (17-20 digits). Or an array of up to 50, run in parallel with per-item results."
+    },
+    "content": {
+     "description": "Replacement text.",
+     "type": "string",
+     "maxLength": 2000
+    },
+    "embeds": {
+     "description": "Replacement embeds; [] removes all.",
+     "maxItems": 10,
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "title": {
+        "type": "string",
+        "maxLength": 256
+       },
+       "description": {
+        "type": "string",
+        "maxLength": 4096
+       },
+       "url": {
+        "type": "string",
+        "format": "uri"
+       },
+       "color": {
+        "description": "Accent colour as '#5865F2' or an integer.",
+        "anyOf": [
+         {
+          "type": "string",
+          "pattern": "^#?[0-9a-fA-F]{6}$"
+         },
+         {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16777215
+         }
+        ]
+       },
+       "timestamp": {
+        "type": "string",
+        "format": "date-time",
+        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+       },
+       "author": {
+        "type": "object",
+        "properties": {
+         "name": {
+          "type": "string",
+          "maxLength": 256
+         },
+         "url": {
+          "type": "string",
+          "format": "uri"
+         },
+         "icon_url": {
+          "type": "string",
+          "format": "uri"
+         }
+        },
+        "required": [
+         "name"
+        ]
+       },
+       "footer": {
+        "type": "object",
+        "properties": {
+         "text": {
+          "type": "string",
+          "maxLength": 2048
+         },
+         "icon_url": {
+          "type": "string",
+          "format": "uri"
+         }
+        },
+        "required": [
+         "text"
+        ]
+       },
+       "image": {
+        "type": "object",
+        "properties": {
+         "url": {
+          "type": "string",
+          "format": "uri"
+         }
+        },
+        "required": [
+         "url"
+        ]
+       },
+       "thumbnail": {
+        "type": "object",
+        "properties": {
+         "url": {
+          "type": "string",
+          "format": "uri"
+         }
+        },
+        "required": [
+         "url"
+        ]
+       },
+       "fields": {
+        "maxItems": 25,
+        "type": "array",
+        "items": {
+         "type": "object",
+         "properties": {
+          "name": {
+           "type": "string",
+           "maxLength": 256
+          },
+          "value": {
+           "type": "string",
+           "maxLength": 1024
+          },
+          "inline": {
+           "type": "boolean"
+          }
+         },
+         "required": [
+          "name",
+          "value"
+         ]
+        }
+       }
+      },
+      "description": "A rich embed. At least one of title, description or fields should be set."
+     }
+    },
+    "allow_mentions": {
+     "default": false,
+     "description": "Whether @mentions in the content actually ping. false (default): nobody is pinged. true: mentioned users and roles are pinged. 'everyone': @everyone and @here ping too.",
+     "anyOf": [
+      {
+       "type": "boolean"
+      },
+      {
+       "type": "string",
+       "const": "everyone"
+      }
+     ]
+    }
+   },
+   "required": [
+    "channel",
+    "message_id"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Edit a Discord message",
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_delete_message",
+  "title": "Delete Discord messages",
+  "description": "Permanently deletes a message. Pass an array of message_ids to delete many at once - recent ones (< 14 days) go through Discord's bulk endpoint, 100 per request.\n\nTo purge by author or text instead of by id, use discord_bulk_delete.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "channel": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Channel or thread: name ('general'), #mention or ID."
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "message_id": {
+     "anyOf": [
+      {
+       "type": "string",
+       "pattern": "^\\d{17,20}$"
+      },
+      {
+       "minItems": 1,
+       "maxItems": 50,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "pattern": "^\\d{17,20}$"
+       }
+      }
+     ],
+     "description": "Message ID (17-20 digits). Or an array of up to 50, run in parallel with per-item results."
+    },
+    "reason": {
+     "description": "Audit-log reason.",
+     "type": "string",
+     "maxLength": 512
+    }
+   },
+   "required": [
+    "channel",
+    "message_id"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Delete Discord messages",
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": true,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_react",
+  "title": "Add, remove or list reactions",
+  "description": "Adds or removes the bot's reaction on a message, or lists who reacted with an emoji (action='list').\n\nEmoji may be unicode ('✅'), a server emoji by name ('partyparrot' or ':partyparrot:'), 'name:id', or '<:name:id>'.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "channel": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Channel or thread: name ('general'), #mention or ID."
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "message_id": {
+     "anyOf": [
+      {
+       "type": "string",
+       "pattern": "^\\d{17,20}$"
+      },
+      {
+       "minItems": 1,
+       "maxItems": 50,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "pattern": "^\\d{17,20}$"
+       }
+      }
+     ],
+     "description": "Message ID (17-20 digits). Or an array of up to 50, run in parallel with per-item results."
+    },
+    "emoji": {
+     "anyOf": [
+      {
+       "type": "string",
+       "minLength": 1
+      },
+      {
+       "minItems": 1,
+       "maxItems": 50,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1
+       }
+      }
+     ],
+     "description": "Unicode emoji, server emoji name, 'name:id' or '<:name:id>'. Or an array of up to 50, run in parallel with per-item results."
+    },
+    "action": {
+     "default": "add",
+     "type": "string",
+     "enum": [
+      "add",
+      "remove",
+      "list"
+     ]
+    }
+   },
+   "required": [
+    "channel",
+    "message_id",
+    "emoji"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Add, remove or list reactions",
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_pin_message",
+  "title": "Pin, unpin or list pinned messages",
+  "description": "Manages a channel's pins. action='list' returns current pins; 'pin' and 'unpin' need message_id. A channel holds at most 50 pins.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "channel": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Channel or thread: name ('general'), #mention or ID."
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "action": {
+     "default": "list",
+     "type": "string",
+     "enum": [
+      "pin",
+      "unpin",
+      "list"
+     ]
+    },
+    "message_id": {
+     "description": "Required for pin and unpin. Or an array of up to 50, run in parallel with per-item results.",
+     "anyOf": [
+      {
+       "type": "string",
+       "pattern": "^\\d{17,20}$"
+      },
+      {
+       "minItems": 1,
+       "maxItems": 50,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "pattern": "^\\d{17,20}$"
+       }
+      }
+     ]
+    }
+   },
+   "required": [
+    "channel"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Pin, unpin or list pinned messages",
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_manage_poll",
+  "title": "Read, list voters of, or end a poll",
+  "description": "Works on the poll attached to a message. action='results' (default) returns the question, each answer's vote count and whether the poll is finalized. 'voters' lists who chose answer_id, up to limit. 'end' closes a poll early so no more votes count; only polls the bot posted itself can be ended.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "channel": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Channel or thread: name ('general'), #mention or ID."
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "message_id": {
+     "type": "string",
+     "pattern": "^\\d{17,20}$",
+     "description": "Message ID (17-20 digits)."
+    },
+    "action": {
+     "default": "results",
+     "type": "string",
+     "enum": [
+      "results",
+      "voters",
+      "end"
+     ]
+    },
+    "answer_id": {
+     "description": "Answer to list voters for. Required for 'voters'; the ids come from 'results'.",
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 9007199254740991
+    },
+    "limit": {
+     "default": 100,
+     "description": "How many voters to return for 'voters' (1-1000).",
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 1000
+    }
+   },
+   "required": [
+    "channel",
+    "message_id"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Read, list voters of, or end a poll",
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_list_members",
+  "title": "List or search server members",
+  "description": "Lists members of a server, or searches them by name.\n\n`query` searches by username/nickname prefix and always works. Listing without a query needs the SERVER MEMBERS intent; without it Discord returns only the bot. Role ids are shown as role names.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "query": {
+     "description": "Search by username or nickname prefix.",
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 100
+    },
+    "limit": {
+     "default": 100,
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 1000
+    },
+    "after": {
+     "description": "Page forward: the next_after value from the previous page.",
+     "type": "string",
+     "pattern": "^\\d{17,20}$"
+    },
+    "with_role": {
+     "description": "Keep only members who have this role (filters the fetched page).",
+     "type": "string",
+     "minLength": 1
+    }
+   },
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "List or search server members",
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_get_member",
+  "title": "Get one member's details",
+  "description": "Fetches a member's details: display name, roles, join date, boost status and any active timeout. Accepts a username, nickname, @mention or user id.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "member": {
+     "anyOf": [
+      {
+       "type": "string",
+       "minLength": 1
+      },
+      {
+       "minItems": 1,
+       "maxItems": 50,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1
+       }
+      }
+     ],
+     "description": "Member: username, nickname, @mention or ID. Or an array of up to 50, run in parallel with per-item results."
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    }
+   },
+   "required": [
+    "member"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Get one member's details",
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_edit_member",
+  "title": "Edit a member",
+  "description": "Changes a member's nickname or voice state (mute, deafen, move, disconnect).\n\nThe bot's highest role must sit above the member's highest role, except when renaming itself.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "member": {
+     "anyOf": [
+      {
+       "type": "string",
+       "minLength": 1
+      },
+      {
+       "minItems": 1,
+       "maxItems": 50,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1
+       }
+      }
+     ],
+     "description": "Member: username, nickname, @mention or ID. Or an array of up to 50, run in parallel with per-item results."
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "nickname": {
+     "description": "New nickname, or null to clear it.",
+     "anyOf": [
+      {
+       "type": "string",
+       "maxLength": 32
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "mute": {
+     "description": "Server-mute in voice channels.",
+     "type": "boolean"
+    },
+    "deaf": {
+     "description": "Server-deafen in voice channels.",
+     "type": "boolean"
+    },
+    "move_to_voice_channel": {
+     "description": "Move to this voice channel, or null to disconnect.",
+     "anyOf": [
+      {
+       "type": "string",
+       "minLength": 1,
+       "description": "Channel or thread: name ('general'), #mention or ID."
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "reason": {
+     "description": "Reason recorded in the audit log.",
+     "type": "string",
+     "maxLength": 512
+    }
+   },
+   "required": [
+    "member"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Edit a member",
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_manage_member_roles",
+  "title": "Add or remove roles on a member",
+  "description": "Grants or revokes roles for a member - any number in one call, applied in a single request.\n\nThe bot's highest role must be ABOVE every role being assigned and above the member's highest role. Managed roles (bot roles, Nitro booster) cannot be assigned manually.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "member": {
+     "anyOf": [
+      {
+       "type": "string",
+       "minLength": 1
+      },
+      {
+       "minItems": 1,
+       "maxItems": 50,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1
+       }
+      }
+     ],
+     "description": "Member: username, nickname, @mention or ID. Or an array of up to 50, run in parallel with per-item results."
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "add": {
+     "description": "Roles to grant.",
+     "maxItems": 25,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Role: name ('Moderator'), @mention or ID."
+     }
+    },
+    "remove": {
+     "description": "Roles to revoke.",
+     "maxItems": 25,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Role: name ('Moderator'), @mention or ID."
+     }
+    },
+    "reason": {
+     "description": "Reason recorded in the audit log.",
+     "type": "string",
+     "maxLength": 512
+    }
+   },
+   "required": [
+    "member"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Add or remove roles on a member",
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_list_roles",
+  "title": "List server roles",
+  "description": "Lists every role in a server, highest first. detail='full' adds each role's permissions by name.\n\nPosition matters: a bot can only assign, edit or delete roles BELOW its own highest role. Check this listing first when a role operation fails with a permissions error.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "detail": {
+     "default": "compact",
+     "description": "compact returns only commonly needed fields (default, cheaper); full includes extra metadata.",
+     "type": "string",
+     "enum": [
+      "compact",
+      "full"
+     ]
+    }
+   },
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "List server roles",
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_manage_role",
+  "title": "Create, edit or delete a role",
+  "description": "Manages roles themselves (use discord_manage_member_roles to assign them to people).\n\n- create: needs `name`.\n- edit: needs `role`, plus the fields to change.\n- delete: needs `role`; destructive, requires DISCORD_ALLOW_DESTRUCTIVE=true.\n\n`permissions` takes names like ['ManageMessages','KickMembers']. A server holds at most 250 roles.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "action": {
+     "type": "string",
+     "enum": [
+      "create",
+      "edit",
+      "delete"
+     ]
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "role": {
+     "description": "Target role for edit and delete. Or an array of up to 50, run in parallel with per-item results.",
+     "anyOf": [
+      {
+       "type": "string",
+       "minLength": 1
+      },
+      {
+       "minItems": 1,
+       "maxItems": 50,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1
+       }
+      }
+     ]
+    },
+    "name": {
+     "description": "Role name (new name when editing). Or an array of up to 50, run in parallel with per-item results.",
+     "anyOf": [
+      {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 100
+      },
+      {
+       "minItems": 1,
+       "maxItems": 50,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100
+       }
+      }
+     ]
+    },
+    "color": {
+     "anyOf": [
+      {
+       "type": "string",
+       "pattern": "^#?[0-9a-fA-F]{6}$"
+      },
+      {
+       "type": "integer",
+       "minimum": 0,
+       "maximum": 16777215
+      }
+     ],
+     "description": "Role colour, e.g. '#5865F2'."
+    },
+    "secondary_color": {
+     "description": "Second colour for a gradient role. Needs color.",
+     "anyOf": [
+      {
+       "type": "string",
+       "pattern": "^#?[0-9a-fA-F]{6}$"
+      },
+      {
+       "type": "integer",
+       "minimum": 0,
+       "maximum": 16777215
+      }
+     ]
+    },
+    "hoist": {
+     "description": "Show members with this role separately in the member list.",
+     "type": "boolean"
+    },
+    "mentionable": {
+     "description": "Allow anyone to @mention this role.",
+     "type": "boolean"
+    },
+    "permissions": {
+     "anyOf": [
+      {
+       "maxItems": 53,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "enum": [
+         "CreateInstantInvite",
+         "KickMembers",
+         "BanMembers",
+         "Administrator",
+         "ManageChannels",
+         "ManageGuild",
+         "AddReactions",
+         "ViewAuditLog",
+         "PrioritySpeaker",
+         "Stream",
+         "ViewChannel",
+         "SendMessages",
+         "SendTTSMessages",
+         "ManageMessages",
+         "EmbedLinks",
+         "AttachFiles",
+         "ReadMessageHistory",
+         "MentionEveryone",
+         "UseExternalEmojis",
+         "ViewGuildInsights",
+         "Connect",
+         "Speak",
+         "MuteMembers",
+         "DeafenMembers",
+         "MoveMembers",
+         "UseVAD",
+         "ChangeNickname",
+         "ManageNicknames",
+         "ManageRoles",
+         "ManageWebhooks",
+         "ManageEmojisAndStickers",
+         "ManageGuildExpressions",
+         "UseApplicationCommands",
+         "RequestToSpeak",
+         "ManageEvents",
+         "ManageThreads",
+         "CreatePublicThreads",
+         "CreatePrivateThreads",
+         "UseExternalStickers",
+         "SendMessagesInThreads",
+         "UseEmbeddedActivities",
+         "ModerateMembers",
+         "ViewCreatorMonetizationAnalytics",
+         "UseSoundboard",
+         "CreateGuildExpressions",
+         "CreateEvents",
+         "UseExternalSounds",
+         "SendVoiceMessages",
+         "SetVoiceChannelStatus",
+         "SendPolls",
+         "UseExternalApps",
+         "PinMessages",
+         "BypassSlowmode"
+        ]
+       }
+      },
+      {
+       "type": "string",
+       "pattern": "^\\d+$"
+      }
+     ],
+     "description": "Permission names such as [\"ManageMessages\",\"KickMembers\"], or a decimal bitfield string. This REPLACES the role's permissions. Pass [] to strip them all."
+    },
+    "reason": {
+     "description": "Reason recorded in the audit log.",
+     "type": "string",
+     "maxLength": 512
+    }
+   },
+   "required": [
+    "action"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Create, edit or delete a role",
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": false,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_reorder_roles",
+  "title": "Reorder the role hierarchy",
+  "description": "Sets the vertical order of roles, highest first.\n\nOrder is not cosmetic: a role can only moderate, assign or edit roles BELOW it, and hoisted roles appear in the member list in this order.\n\nListed roles are placed directly below the bot's own highest role (Discord forbids a bot moving anything above itself); roles left out keep their relative order beneath them.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "order": {
+     "minItems": 2,
+     "maxItems": 50,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Role: name ('Moderator'), @mention or ID."
+     },
+     "description": "Roles from highest to lowest, e.g. ['Admin','Moderator','Helper','Member']."
+    },
+    "reason": {
+     "description": "Reason recorded in the audit log.",
+     "type": "string",
+     "maxLength": 512
+    }
+   },
+   "required": [
+    "order"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Reorder the role hierarchy",
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_moderate_member",
+  "title": "Kick, ban, unban or time out a member",
+  "description": "Performs a moderation action on a member.\n\n- kick: removes them; they can rejoin with an invite.\n- ban: removes and blocks them; `delete_message_days` also purges their recent messages. An array of members is banned in one request.\n- unban: lifts a ban (accepts the banned user's name).\n- timeout: mutes them for `duration_minutes` (max 28 days). untimeout clears it.\n\nkick, ban and timeout require DISCORD_ALLOW_DESTRUCTIVE=true; unban and untimeout always work.\n\nThe bot's highest role must be ABOVE the target's. Always pass `reason` - it goes in the audit log.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "action": {
+     "type": "string",
+     "enum": [
+      "kick",
+      "ban",
+      "unban",
+      "timeout",
+      "untimeout"
+     ]
+    },
+    "member": {
+     "anyOf": [
+      {
+       "type": "string",
+       "minLength": 1
+      },
+      {
+       "minItems": 1,
+       "maxItems": 50,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1
+       }
+      }
+     ],
+     "description": "Member: username, nickname, @mention or ID. Or an array of up to 50, run in parallel with per-item results."
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "reason": {
+     "description": "Reason recorded in the audit log.",
+     "type": "string",
+     "maxLength": 512
+    },
+    "duration_minutes": {
+     "description": "Timeout length in minutes, max 40320 (28 days). Required for action='timeout'.",
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 40320
+    },
+    "delete_message_days": {
+     "default": 0,
+     "description": "For ban: also delete this many days of the user's recent messages (0-7).",
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 7
+    }
+   },
+   "required": [
+    "action",
+    "member"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Kick, ban, unban or time out a member",
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": false,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_bulk_delete",
+  "title": "Purge messages",
+  "description": "Deletes recent messages from a channel, optionally only those by one member or containing some text.\n\nScans up to `limit` recent messages (max 1000). Messages older than 14 days cannot be bulk-deleted and are reported as skipped; pinned messages are kept unless include_pinned is true. Cannot be undone.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "channel": {
+     "anyOf": [
+      {
+       "type": "string",
+       "minLength": 1
+      },
+      {
+       "minItems": 1,
+       "maxItems": 50,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1
+       }
+      }
+     ],
+     "description": "Channel or thread: name ('general'), #mention or ID. Or an array of up to 50, run in parallel with per-item results."
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "limit": {
+     "default": 50,
+     "description": "How many recent messages to consider (1-1000).",
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 1000
+    },
+    "before": {
+     "description": "Only consider messages older than this message ID.",
+     "type": "string",
+     "pattern": "^\\d{17,20}$"
+    },
+    "from_author": {
+     "description": "Only delete messages by this member.",
+     "type": "string",
+     "minLength": 1
+    },
+    "contains": {
+     "description": "Only delete messages containing this text.",
+     "type": "string",
+     "minLength": 1
+    },
+    "include_pinned": {
+     "default": false,
+     "description": "Also delete pinned messages.",
+     "type": "boolean"
+    },
+    "reason": {
+     "description": "Reason recorded in the audit log.",
+     "type": "string",
+     "maxLength": 512
+    }
+   },
+   "required": [
+    "channel"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Purge messages",
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": false,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_list_bans",
+  "title": "List banned users",
+  "description": "Lists users banned from a server, with the reason recorded at ban time. Read-only.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "query": {
+     "description": "Only bans whose username or reason contains this text.",
+     "type": "string",
+     "minLength": 1
+    },
+    "limit": {
+     "default": 100,
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 1000
+    },
+    "after": {
+     "description": "Page forward from this user id.",
+     "type": "string",
+     "pattern": "^\\d{17,20}$"
+    }
+   },
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "List banned users",
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_get_audit_log",
+  "title": "Read the server audit log",
+  "description": "Reads recent moderation and configuration changes from the audit log - 'who deleted that channel?', 'who banned this user?'. detail='full' includes the old and new values of each change.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "limit": {
+     "default": 50,
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 100
+    },
+    "action": {
+     "description": "Filter to one kind of action, e.g. 'member_ban_add'.",
+     "type": "string",
+     "enum": [
+      "guild_update",
+      "channel_create",
+      "channel_update",
+      "channel_delete",
+      "channel_overwrite_create",
+      "channel_overwrite_update",
+      "channel_overwrite_delete",
+      "member_kick",
+      "member_prune",
+      "member_ban_add",
+      "member_ban_remove",
+      "member_update",
+      "member_role_update",
+      "member_move",
+      "member_disconnect",
+      "bot_add",
+      "role_create",
+      "role_update",
+      "role_delete",
+      "invite_create",
+      "invite_update",
+      "invite_delete",
+      "webhook_create",
+      "webhook_update",
+      "webhook_delete",
+      "emoji_create",
+      "emoji_update",
+      "emoji_delete",
+      "message_delete",
+      "message_bulk_delete",
+      "message_pin",
+      "message_unpin",
+      "integration_create",
+      "integration_update",
+      "integration_delete",
+      "stage_instance_create",
+      "stage_instance_update",
+      "stage_instance_delete",
+      "sticker_create",
+      "sticker_update",
+      "sticker_delete",
+      "guild_scheduled_event_create",
+      "guild_scheduled_event_update",
+      "guild_scheduled_event_delete",
+      "thread_create",
+      "thread_update",
+      "thread_delete",
+      "application_command_permission_update",
+      "soundboard_sound_create",
+      "soundboard_sound_update",
+      "soundboard_sound_delete",
+      "auto_moderation_rule_create",
+      "auto_moderation_rule_update",
+      "auto_moderation_rule_delete",
+      "auto_moderation_block_message",
+      "auto_moderation_flag_to_channel",
+      "auto_moderation_user_communication_disabled",
+      "auto_moderation_quarantine_user",
+      "creator_monetization_request_created",
+      "creator_monetization_terms_accepted",
+      "onboarding_prompt_create",
+      "onboarding_prompt_update",
+      "onboarding_prompt_delete",
+      "onboarding_create",
+      "onboarding_update",
+      "home_settings_create",
+      "home_settings_update",
+      "voice_channel_status_create",
+      "voice_channel_status_delete"
+     ]
+    },
+    "by_member": {
+     "description": "Only entries produced by this moderator.",
+     "type": "string",
+     "minLength": 1
+    },
+    "before": {
+     "description": "Page back: entries older than this entry id.",
+     "type": "string",
+     "pattern": "^\\d{17,20}$"
+    },
+    "detail": {
+     "default": "compact",
+     "description": "compact returns only commonly needed fields (default, cheaper); full includes extra metadata.",
+     "type": "string",
+     "enum": [
+      "compact",
+      "full"
+     ]
+    }
+   },
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Read the server audit log",
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_automod",
+  "title": "Manage AutoMod rules",
+  "description": "Lists, creates, edits and deletes AutoMod rules that block, alert on or time out messages.\n\n- list (default): every rule with its trigger, actions, exemptions and key settings.\n- create: needs name and trigger (keyword, spam, keyword_preset or mention_spam). timeout only works with keyword or mention_spam.\n- edit: needs rule and the fields to change; the trigger type cannot change.\n- delete: needs rule; destructive, requires DISCORD_ALLOW_DESTRUCTIVE=true.\n\nAlso destructive, each requiring DISCORD_ALLOW_DESTRUCTIVE=true: disabling a rule (enabled=false), replacing its actions with ones that have no block or timeout, emptying a keyword rule's filter, and exempting @everyone.\n\n`rule` takes an ID or an exact name.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "action": {
+     "default": "list",
+     "type": "string",
+     "enum": [
+      "list",
+      "create",
+      "edit",
+      "delete"
+     ]
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "rule": {
+     "description": "Rule ID or exact name. Required for edit and delete.",
+     "type": "string",
+     "minLength": 1
+    },
+    "name": {
+     "description": "Rule name. Required for create; new name when editing.",
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 100
+    },
+    "trigger": {
+     "description": "create only: what the rule looks for. A rule's trigger cannot be changed afterwards.",
+     "type": "string",
+     "enum": [
+      "keyword",
+      "spam",
+      "keyword_preset",
+      "mention_spam"
+     ]
+    },
+    "keywords": {
+     "description": "keyword rules: words or phrases to match, each up to 60 characters.",
+     "maxItems": 1000,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 60
+     }
+    },
+    "regex_patterns": {
+     "description": "keyword rules: regular expressions to match, up to 10.",
+     "maxItems": 10,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 260
+     }
+    },
+    "allow_list": {
+     "description": "keyword and keyword_preset rules: words never blocked, each up to 60 characters (keyword: up to 100, keyword_preset: up to 1000).",
+     "maxItems": 1000,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 60
+     }
+    },
+    "presets": {
+     "description": "keyword_preset rules: built-in word lists to block.",
+     "minItems": 1,
+     "maxItems": 3,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "profanity",
+       "sexual_content",
+       "slurs"
+      ]
+     }
+    },
+    "mention_total_limit": {
+     "description": "mention_spam rules: most mentions one message may contain.",
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 50
+    },
+    "mention_raid_protection": {
+     "description": "mention_spam rules: also block raids where many new accounts mention people at once.",
+     "type": "boolean"
+    },
+    "actions": {
+     "description": "What happens on a match. Defaults to a single block action on create.",
+     "minItems": 1,
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "type": {
+        "type": "string",
+        "enum": [
+         "block",
+         "alert",
+         "timeout"
+        ],
+        "description": "block: stop the message. alert: post to a channel. timeout: mute the author."
+       },
+       "custom_message": {
+        "description": "block only: text shown to the author.",
+        "type": "string",
+        "maxLength": 150
+       },
+       "channel": {
+        "description": "alert only: the channel that receives the alert.",
+        "type": "string",
+        "minLength": 1
+       },
+       "duration_seconds": {
+        "description": "timeout only: seconds to mute the author, up to 2419200 (28 days).",
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 2419200
+       }
+      },
+      "required": [
+       "type"
+      ]
+     }
+    },
+    "exempt_roles": {
+     "description": "Roles the rule ignores, up to 20. Replaces the list.",
+     "maxItems": 20,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Role: name ('Moderator'), @mention or ID."
+     }
+    },
+    "exempt_channels": {
+     "description": "Channels the rule ignores, up to 50. Replaces the list.",
+     "maxItems": 50,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Channel or thread: name ('general'), #mention or ID."
+     }
+    },
+    "enabled": {
+     "description": "Turn the rule on or off. Defaults to on when created.",
+     "type": "boolean"
+    },
+    "detail": {
+     "default": "compact",
+     "description": "compact returns only commonly needed fields (default, cheaper); full includes extra metadata.",
+     "type": "string",
+     "enum": [
+      "compact",
+      "full"
+     ]
+    },
+    "reason": {
+     "description": "Reason recorded in the audit log.",
+     "type": "string",
+     "maxLength": 512
+    }
+   },
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Manage AutoMod rules",
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": false,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_create_invite",
+  "title": "Create an invite link",
+  "description": "Creates an invite link to a channel.\n\nDefaults to a link that expires after 24 hours with unlimited uses, like Discord's own default. Set `max_age_seconds` (0 = never expires) or `max_uses` to change that, or `temporary` to grant membership only until the person disconnects.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "channel": {
+     "anyOf": [
+      {
+       "type": "string",
+       "minLength": 1
+      },
+      {
+       "minItems": 1,
+       "maxItems": 50,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1
+       }
+      }
+     ],
+     "description": "Channel or thread: name ('general'), #mention or ID. Or an array of up to 50, run in parallel with per-item results."
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "max_age_seconds": {
+     "default": 86400,
+     "description": "Seconds until the invite expires (default 86400 = 24h); 0 means never (max 604800 = 7 days).",
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 604800
+    },
+    "max_uses": {
+     "default": 0,
+     "description": "Maximum uses; 0 means unlimited.",
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 100
+    },
+    "temporary": {
+     "default": false,
+     "description": "Grant temporary membership only.",
+     "type": "boolean"
+    },
+    "reason": {
+     "description": "Reason recorded in the audit log.",
+     "type": "string",
+     "maxLength": 512
+    }
+   },
+   "required": [
+    "channel"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Create an invite link",
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_manage_invites",
+  "title": "Manage invite links",
+  "description": "Lists the server's invite links and revokes them.\n\n- list (default): every invite with its link, channel, inviter, uses and expiry. max_uses 0 means no limit.\n- revoke: needs code, the code or a discord.gg / discord.com/invite link. Destructive: requires DISCORD_ALLOW_DESTRUCTIVE=true.\n\nRevoke works on any invite the bot can manage, so `guild` only matters for list.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "action": {
+     "default": "list",
+     "type": "string",
+     "enum": [
+      "list",
+      "revoke"
+     ]
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "code": {
+     "description": "revoke only: the invite code, or a discord.gg or discord.com/invite link.",
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 200
+    },
+    "reason": {
+     "description": "Reason recorded in the audit log.",
+     "type": "string",
+     "maxLength": 512
+    }
+   },
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Manage invite links",
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": false,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_scheduled_events",
+  "title": "Manage scheduled events",
+  "description": "Lists, creates, edits and deletes server scheduled events, and lists who is interested in one.\n\n- list (default): every event with status, times, location or channel, and interested count.\n- create: needs name and start_time (in the future), plus location (external; also needs end_time) or channel (voice or stage).\n- edit: needs event and the fields to change. Setting status to canceled is destructive and needs DISCORD_ALLOW_DESTRUCTIVE=true.\n- users: needs event; paged with limit and after.\n- delete: needs event; destructive, requires DISCORD_ALLOW_DESTRUCTIVE=true.\n\n`event` takes an ID or an exact name. Times are ISO 8601, e.g. 2026-11-01T18:00:00Z.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "action": {
+     "default": "list",
+     "type": "string",
+     "enum": [
+      "list",
+      "create",
+      "edit",
+      "delete",
+      "users"
+     ]
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "event": {
+     "description": "Event ID or exact name. Required for edit, delete and users.",
+     "type": "string",
+     "minLength": 1
+    },
+    "name": {
+     "description": "Event name (new name when editing).",
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 100
+    },
+    "description": {
+     "description": "Event description, up to 1000 characters. When editing, '' clears it.",
+     "type": "string",
+     "maxLength": 1000
+    },
+    "start_time": {
+     "description": "Start time, ISO 8601, e.g. 2026-11-01T18:00:00Z. Must be in the future.",
+     "type": "string",
+     "format": "date-time",
+     "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+    },
+    "end_time": {
+     "description": "End time, ISO 8601. Required for external events.",
+     "type": "string",
+     "format": "date-time",
+     "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+    },
+    "location": {
+     "description": "Where an external event takes place (up to 100 characters). Makes the event External.",
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 100
+    },
+    "channel": {
+     "description": "Voice or stage channel that hosts the event. Use instead of location.",
+     "type": "string",
+     "minLength": 1
+    },
+    "status": {
+     "description": "edit only: move the event to another state. canceled is destructive and needs DISCORD_ALLOW_DESTRUCTIVE=true.",
+     "type": "string",
+     "enum": [
+      "scheduled",
+      "active",
+      "completed",
+      "canceled"
+     ]
+    },
+    "limit": {
+     "default": 50,
+     "description": "users only: how many to return per page.",
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 100
+    },
+    "after": {
+     "description": "users only: the last user ID from the previous page, to continue.",
+     "type": "string",
+     "pattern": "^\\d{17,20}$"
+    },
+    "detail": {
+     "default": "compact",
+     "description": "compact returns only commonly needed fields (default, cheaper); full includes extra metadata.",
+     "type": "string",
+     "enum": [
+      "compact",
+      "full"
+     ]
+    },
+    "reason": {
+     "description": "Reason recorded in the audit log.",
+     "type": "string",
+     "maxLength": 512
+    }
+   },
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Manage scheduled events",
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": false,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_manage_emojis",
+  "title": "Manage server emojis",
+  "description": "Lists, adds, renames and deletes custom server emojis.\n\n- list (default): every emoji with its ID and a ready-to-send mention.\n- create: needs name (2-32 letters, digits or _) and file ({path} or {url}; PNG, JPG, GIF or WebP, max 256 KiB). roles restricts who can use it.\n- rename: needs emoji and name. delete: needs emoji; destructive, requires DISCORD_ALLOW_DESTRUCTIVE=true.\n\n`emoji` takes an ID, '<:name:id>' or the name.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "action": {
+     "default": "list",
+     "type": "string",
+     "enum": [
+      "list",
+      "create",
+      "rename",
+      "delete"
+     ]
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "emoji": {
+     "description": "rename or delete: the emoji's ID, '<:name:id>' or name.",
+     "type": "string",
+     "minLength": 1
+    },
+    "name": {
+     "description": "New emoji name for create and rename.",
+     "type": "string",
+     "pattern": "^[A-Za-z0-9_]{2,32}$"
+    },
+    "file": {
+     "description": "create only: the image, as {path} or {url}. PNG, JPG, GIF or WebP, max 256 KiB.",
+     "type": "object",
+     "properties": {
+      "path": {
+       "description": "Absolute path to a local image.",
+       "type": "string",
+       "minLength": 1
+      },
+      "url": {
+       "description": "Public http(s) URL of an image.",
+       "type": "string",
+       "minLength": 1
+      }
+     }
+    },
+    "roles": {
+     "description": "create only: restrict the emoji to these roles.",
+     "maxItems": 20,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Role: name ('Moderator'), @mention or ID."
+     }
+    },
+    "reason": {
+     "description": "Reason recorded in the audit log.",
+     "type": "string",
+     "maxLength": 512
+    }
+   },
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Manage server emojis",
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": false,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_wait_for_event",
+  "title": "Wait for a live Discord event",
+  "description": "Blocks until a matching live event arrives, or the timeout expires - a reply in a channel, someone joining, a reaction.\n\nThe first call opens a gateway connection (a few seconds); later calls reuse it. Pass after_seq from a previous discord_recent_events result to also catch anything that arrived in between. Keep timeout_seconds modest - the call is held open for its whole duration.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "types": {
+     "minItems": 1,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "MESSAGE_CREATE",
+       "MESSAGE_UPDATE",
+       "MESSAGE_DELETE",
+       "MESSAGE_DELETE_BULK",
+       "MESSAGE_REACTION_ADD",
+       "MESSAGE_REACTION_REMOVE",
+       "GUILD_MEMBER_ADD",
+       "GUILD_MEMBER_REMOVE",
+       "GUILD_MEMBER_UPDATE",
+       "GUILD_BAN_ADD",
+       "GUILD_BAN_REMOVE",
+       "GUILD_ROLE_CREATE",
+       "GUILD_ROLE_UPDATE",
+       "GUILD_ROLE_DELETE",
+       "CHANNEL_CREATE",
+       "CHANNEL_UPDATE",
+       "CHANNEL_DELETE",
+       "THREAD_CREATE",
+       "THREAD_UPDATE",
+       "THREAD_DELETE",
+       "VOICE_STATE_UPDATE",
+       "INVITE_CREATE",
+       "INVITE_DELETE"
+      ]
+     },
+     "description": "Event types to wait for, e.g. ['MESSAGE_CREATE']."
+    },
+    "guild": {
+     "description": "Only match events from this server.",
+     "type": "string",
+     "minLength": 1
+    },
+    "channel": {
+     "description": "Only events in this channel, or in any of these channels.",
+     "anyOf": [
+      {
+       "type": "string",
+       "minLength": 1,
+       "description": "Channel or thread: name ('general'), #mention or ID."
+      },
+      {
+       "minItems": 1,
+       "maxItems": 25,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Channel or thread: name ('general'), #mention or ID."
+       }
+      }
+     ]
+    },
+    "contains": {
+     "description": "For message events: only match if the text contains this.",
+     "type": "string",
+     "minLength": 1
+    },
+    "from_author": {
+     "description": "Only events caused by this username or user ID.",
+     "type": "string",
+     "minLength": 1
+    },
+    "timeout_seconds": {
+     "default": 60,
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 600
+    },
+    "after_seq": {
+     "description": "Only events newer than this seq (from a previous result's last_seq), so nothing is seen twice or missed.",
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 9007199254740991
+    },
+    "include_raw": {
+     "default": false,
+     "description": "Include the full raw gateway payload. Verbose.",
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "types"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Wait for a live Discord event",
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_recent_events",
+  "title": "Read buffered live events",
+  "description": "Returns events buffered since the gateway connected, without waiting.\n\nThe buffer fills only while connected - from the first call to this tool or discord_wait_for_event until an idle period passes. Pass after_seq (the last_seq from the previous call) to get only new events, oldest first, so repeated calls page through everything. For older history use discord_read_messages.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "types": {
+     "description": "Filter to these event types.",
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "MESSAGE_CREATE",
+       "MESSAGE_UPDATE",
+       "MESSAGE_DELETE",
+       "MESSAGE_DELETE_BULK",
+       "MESSAGE_REACTION_ADD",
+       "MESSAGE_REACTION_REMOVE",
+       "GUILD_MEMBER_ADD",
+       "GUILD_MEMBER_REMOVE",
+       "GUILD_MEMBER_UPDATE",
+       "GUILD_BAN_ADD",
+       "GUILD_BAN_REMOVE",
+       "GUILD_ROLE_CREATE",
+       "GUILD_ROLE_UPDATE",
+       "GUILD_ROLE_DELETE",
+       "CHANNEL_CREATE",
+       "CHANNEL_UPDATE",
+       "CHANNEL_DELETE",
+       "THREAD_CREATE",
+       "THREAD_UPDATE",
+       "THREAD_DELETE",
+       "VOICE_STATE_UPDATE",
+       "INVITE_CREATE",
+       "INVITE_DELETE"
+      ]
+     }
+    },
+    "guild": {
+     "type": "string",
+     "minLength": 1,
+     "description": "Server name or ID. Optional if the bot is in one server or a default is set."
+    },
+    "channel": {
+     "description": "Only events in this channel, or in any of these channels.",
+     "anyOf": [
+      {
+       "type": "string",
+       "minLength": 1,
+       "description": "Channel or thread: name ('general'), #mention or ID."
+      },
+      {
+       "minItems": 1,
+       "maxItems": 25,
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Channel or thread: name ('general'), #mention or ID."
+       }
+      }
+     ]
+    },
+    "from_author": {
+     "description": "Only events caused by this username or user ID.",
+     "type": "string",
+     "minLength": 1
+    },
+    "after_seq": {
+     "description": "Only events newer than this seq (from a previous result's last_seq), so nothing is seen twice or missed.",
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 9007199254740991
+    },
+    "limit": {
+     "default": 50,
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 200
+    },
+    "include_raw": {
+     "default": false,
+     "description": "Include the full raw gateway payload. Verbose.",
+     "type": "boolean"
+    }
+   },
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Read buffered live events",
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": true
+  }
+ },
+ {
+  "name": "discord_batch",
+  "title": "Run several Discord tools in parallel",
+  "description": "Runs several different Discord tool calls in one request, in parallel within Discord's rate limits.\n\nEach operation is {tool, args} with exactly the arguments that tool takes directly. `defaults` fills arguments an operation leaves out (e.g. {guild: 'my server'}), wherever the tool accepts them. For the same tool over many targets, prefer passing an array to that tool instead.\n\nOne failure does not stop the others - each operation reports ok/error - unless stop_on_error is set.\n\nExample: operations: [{\"tool\":\"discord_send_message\",\"args\":{\"channel\":\"general\",\"content\":\"Deploy done\"}}, {\"tool\":\"discord_manage_member_roles\",\"args\":{\"member\":\"alice\",\"add\":[\"Release\"]}}]",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {
+    "operations": {
+     "minItems": 1,
+     "maxItems": 50,
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "tool": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Name of the tool to run, e.g. 'discord_send_message'."
+       },
+       "args": {
+        "default": {},
+        "description": "Arguments for that tool.",
+        "type": "object",
+        "propertyNames": {
+         "type": "string"
+        },
+        "additionalProperties": {}
+       }
+      },
+      "required": [
+       "tool"
+      ]
+     },
+     "description": "Up to 50 operations."
+    },
+    "defaults": {
+     "description": "Arguments applied to every operation that accepts them and does not set them itself.",
+     "type": "object",
+     "propertyNames": {
+      "type": "string"
+     },
+     "additionalProperties": {}
+    },
+    "concurrency": {
+     "description": "How many operations run at once. Defaults to DISCORD_BATCH_CONCURRENCY (4).",
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 10
+    },
+    "stop_on_error": {
+     "default": false,
+     "description": "Abandon operations that have not started once one fails, including a fan-out where any item failed. In-flight work still completes.",
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "operations"
+   ],
+   "additionalProperties": false
+  },
+  "annotations": {
+   "title": "Run several Discord tools in parallel",
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "idempotentHint": false,
+   "openWorldHint": true
+  }
+ }
+]

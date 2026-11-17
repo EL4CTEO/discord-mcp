@@ -10,8 +10,8 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@el4cteo/discord-mcp"><img src="https://img.shields.io/npm/v/@el4cteo/discord-mcp?color=5865F2" alt="npm version"></a>
-  <img src="https://img.shields.io/badge/node-%E2%89%A520.10-339933" alt="Node 20.10+">
-  <img src="https://img.shields.io/badge/TypeScript-strict-3178C6" alt="TypeScript">
+  <img src="https://img.shields.io/badge/Rust-native-DEA584" alt="Rust">
+  <img src="https://img.shields.io/badge/platforms-win%20%7C%20linux%20%7C%20macOS-5865F2" alt="Windows, Linux, macOS">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license">
 </p>
 
@@ -24,6 +24,7 @@
 - **Safe by default**: destructive actions stay off until you enable them
 - **Hardened against prompt injection**: no admin-grade grants, mass pings, secret-file uploads or internal-network fetches unless you allow them
 - **Helpful errors**: every error says *how to fix it*, not just what broke
+- **Native and light**: a single Rust binary - instant start, small memory footprint, no Node runtime needed to run it
 
 ## Setup
 
@@ -37,12 +38,14 @@
 claude mcp add discord --env DISCORD_TOKEN=your_token_here -- npx -y @el4cteo/discord-mcp
 ```
 
-Or from a local clone:
+`npx` downloads the prebuilt binary for your platform (Windows x64, Linux x64/arm64, macOS x64/arm64).
+
+Or run the binary directly - from the [releases page](https://github.com/EL4CTEO/discord-mcp/releases), `cargo install --git https://github.com/EL4CTEO/discord-mcp`, or a local build:
 
 ```bash
 git clone https://github.com/EL4CTEO/discord-mcp.git
-cd discord-mcp && npm install   # also builds
-claude mcp add discord --env DISCORD_TOKEN=your_token_here -- node /absolute/path/to/discord-mcp/dist/index.js
+cd discord-mcp && cargo build --release
+claude mcp add discord --env DISCORD_TOKEN=your_token_here -- /absolute/path/to/discord-mcp/target/release/discord-mcp
 ```
 
 Restart Claude Code, then ask it to run `discord_whoami` to check the connection.
@@ -112,17 +115,15 @@ One failure does not stop the rest - every operation reports its own result.
 
 ```
 src/
-├─ index.ts          stdio entry point
-├─ config.ts         env parsing and validation
-├─ server.ts         MCP wiring
-├─ discord/
-│  ├─ rest.ts        REST client, automatic rate-limit buckets
-│  ├─ gateway.ts     WebSocket - connects lazily, closes when idle
-│  ├─ cache.ts       TTL cache for name lookups
-│  └─ resolve.ts     names -> IDs
-├─ tools/            one module per capability group
-├─ lib/              errors, formatting, concurrency, output fitting, text splitting
-└─ schemas/          shared Zod schemas
+├─ main.rs           stdio entry point
+├─ config.rs         env parsing and validation
+├─ server.rs         MCP wiring (rmcp)
+├─ rest.rs           Discord REST client, per-bucket rate limiting
+├─ gateway.rs        WebSocket (twilight-gateway) - connects lazily, closes when idle
+├─ cache.rs          TTL cache for name lookups
+├─ resolve.rs        names -> IDs
+├─ tools/            one module per capability group, plus catalog.json (the tool schemas)
+└─ format.rs, render.rs, text.rs, upload.rs, limiter.rs, permissions.rs
 ```
 
 REST handles every action, so startup is instant. The WebSocket only opens when a tool needs live events, and closes again after 2 minutes idle.
@@ -159,12 +160,13 @@ Use `discord_batch` instead when the calls are *different* tools.
 
 ## Development
 
-
 ```bash
-npm run dev        # watch mode
-npm test           # run tests
-npm run typecheck  # types only
+cargo run          # needs DISCORD_TOKEN in the environment
+cargo test         # unit, tool and stdio tests (no Discord account needed)
+cargo clippy --all-targets -- -D warnings
 ```
+
+Releases: bump the version in `Cargo.toml` and `package.json` (including `optionalDependencies`), then push a `vX.Y.Z` tag. CI builds every platform, attaches the binaries to the GitHub release and publishes to npm.
 
 ## Notes
 
