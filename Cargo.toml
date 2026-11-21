@@ -1,6 +1,6 @@
 [package]
 name = "el4cteo-discord-mcp"
-version = "1.5.2"
+version = "1.5.3"
 edition = "2024"
 rust-version = "1.90"
 description = "MCP server that lets AI agents run a Discord bot: messages, DMs, channels, threads, roles, members, moderation, live events and bulk operations."
