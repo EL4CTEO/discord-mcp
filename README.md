@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.svg" width="120" alt="Discord MCP logo">
+  <img src="https://raw.githubusercontent.com/EL4CTEO/discord-mcp/main/assets/logo.png" width="120" alt="Discord MCP logo">
 </p>
 
 <h1 align="center">Discord MCP</h1>
@@ -10,21 +10,18 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@el4cteo/discord-mcp"><img src="https://img.shields.io/npm/v/@el4cteo/discord-mcp?color=5865F2" alt="npm version"></a>
-  <img src="https://img.shields.io/badge/Rust-native-DEA584" alt="Rust">
-  <img src="https://img.shields.io/badge/platforms-win%20%7C%20linux%20%7C%20macOS-5865F2" alt="Windows, Linux, macOS">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license">
 </p>
 
 ## Features
 
-- **38 tools**: messages, DMs, uploads, forwards, polls, channels, threads, forums, members, roles, moderation, AutoMod, scheduled events, emojis, invites and live events
-- **Names instead of IDs**: say `"general"` or `"@everyone"`, never a snowflake
-- **Bulk on every tool**: pass an array anywhere a single value goes. `discord_batch` mixes different tools
-- **Long messages just work**: text over 2000 characters is split cleanly, and code blocks stay intact
-- **Safe by default**: destructive actions stay off until you enable them
-- **Hardened against prompt injection**: no admin-grade grants, mass pings, secret-file uploads or internal-network fetches unless you allow them
-- **Helpful errors**: every error says *how to fix it*, not just what broke
-- **Native and light**: a single Rust binary - instant start, small memory footprint, no Node runtime needed to run it
+- **38 tools**: messages, DMs, uploads, polls, channels, threads, forums, members, roles, moderation, AutoMod, events, emojis, invites, live events
+- **Names, not IDs**: `"general"`, `"@everyone"`, never a snowflake
+- **Bulk everywhere**: pass an array wherever one value goes; `discord_batch` mixes tools
+- **Long messages split cleanly**, code blocks intact
+- **Safe by default**: destructive actions off until enabled; hardened against prompt injection
+- **Errors say how to fix them**
+- **Single Rust binary**: instant start, small memory, no Node runtime needed
 
 ## Setup
 
@@ -40,15 +37,9 @@ claude mcp add discord --env DISCORD_TOKEN=your_token_here -- npx -y @el4cteo/di
 
 `npx` downloads the prebuilt binary for your platform (Windows x64, Linux x64/arm64, macOS x64/arm64).
 
-Or run the binary directly - from the [releases page](https://github.com/EL4CTEO/discord-mcp/releases), `cargo install --git https://github.com/EL4CTEO/discord-mcp`, or a local build:
+Or use a binary from [Releases](https://github.com/EL4CTEO/discord-mcp/releases) / `cargo install --git https://github.com/EL4CTEO/discord-mcp`, and point `claude mcp add` at it.
 
-```bash
-git clone https://github.com/EL4CTEO/discord-mcp.git
-cd discord-mcp && cargo build --release
-claude mcp add discord --env DISCORD_TOKEN=your_token_here -- /absolute/path/to/discord-mcp/target/release/discord-mcp
-```
-
-Restart Claude Code, then ask it to run `discord_whoami` to check the connection.
+Restart Claude Code and ask it to run `discord_whoami`.
 
 ## Configuration
 
@@ -84,20 +75,28 @@ Restart Claude Code, then ask it to run `discord_whoami` to check the connection
 
 **Batch** - `discord_batch`
 
-\* needs `DISCORD_ALLOW_DESTRUCTIVE=true`, and stays hidden until then. Tools that mix safe and destructive actions (deleting a role, kicking or banning, deleting events, rules, emojis or invites) refuse just the destructive ones.
+\* needs `DISCORD_ALLOW_DESTRUCTIVE=true` (hidden until then). Mixed tools refuse only their destructive actions.
 
 ## Security
 
-Discord messages are written by strangers, and the agent reads them. So the server refuses what an injected instruction would ask for, unless you allow it:
+The agent reads messages written by strangers, so the server refuses what an injected instruction would ask for, unless you allow it:
 
-- **Admin-grade grants**: creating or assigning a role with Administrator, Manage Roles, Ban Members and similar, granting them on a channel, or un-hiding a private channel
+- **Admin-grade grants** (Administrator, Manage Roles, Ban Members…) and un-hiding private channels
 - **Mass pings**: `@everyone` / `@here` need `DISCORD_ALLOW_MASS_MENTIONS=true`
-- **File uploads**: only from `DISCORD_UPLOAD_DIRS`. Keys, `.env` files, the bot token and private keys are refused, even renamed
-- **URL uploads**: only public `http(s)` hosts. Private, loopback and cloud-metadata addresses are blocked, including through redirects and DNS tricks
-- **Exact targets**: bans, kicks, timeouts, purges and deletes need the exact name or ID, never a partial match
-- **Strict arguments**: a misspelled argument is rejected instead of silently ignored
+- **Uploads**: only from `DISCORD_UPLOAD_DIRS`; keys, `.env`, the bot token and private keys are refused even renamed. URL uploads block private, loopback and metadata addresses (redirects and DNS tricks included)
+- **Exact targets** for bans, kicks, timeouts, purges and deletes
+- **Strict arguments**: misspelled arguments are rejected
 
-## Batch example
+## Bulk and batch
+
+Any tool accepts an array wherever it accepts one value; items run in parallel across rate-limit buckets and each reports its own result:
+
+```jsonc
+{ "channel": ["general", "announcements", "codes"], "content": "hi" }
+// discord_send_message on 3 items: 2 succeeded, 1 failed.
+```
+
+Different tools in one call:
 
 ```json
 {
@@ -109,54 +108,7 @@ Discord messages are written by strangers, and the agent reads them. So the serv
 }
 ```
 
-One failure does not stop the rest - every operation reports its own result.
-
-## Architecture
-
-```
-src/
-├─ main.rs           stdio entry point
-├─ config.rs         env parsing and validation
-├─ server.rs         MCP wiring (rmcp)
-├─ rest.rs           Discord REST client, per-bucket rate limiting
-├─ gateway.rs        WebSocket (twilight-gateway) - connects lazily, closes when idle
-├─ cache.rs          TTL cache for name lookups
-├─ resolve.rs        names -> IDs
-├─ tools/            one module per capability group, plus catalog.json (the tool schemas)
-└─ format.rs, render.rs, text.rs, upload.rs, limiter.rs, permissions.rs
-```
-
-REST handles every action, so startup is instant. The WebSocket only opens when a tool needs live events, and closes again after 2 minutes idle.
-
-## Bulk operations
-
-Every tool that acts on a thing accepts an **array** wherever it accepts one value:
-
-```jsonc
-// one channel
-{ "channel": "general", "content": "hi" }
-
-// or fifty, in parallel, from the same tool
-{ "channel": ["general", "announcements", "codes"], "content": "hi" }
-```
-
-Items are grouped by rate-limit bucket, run in parallel across buckets, and each reports its own result - so one failure never hides the rest:
-
-```
-discord_send_message on 3 items: 2 succeeded, 1 failed.
-```
-
-Use `discord_batch` instead when the calls are *different* tools.
-
-## Performance
-
-- **Warm start**: name caches load while the client connects
-- **Caches stay fresh**: the server's own edits, and live gateway events, update the caches in place, so nothing needs a refetch
-- **Real bulk endpoints**: arrays of message deletes and bans each go out as one request
-- **One request for many role changes**: adding or removing several roles on a member is a single call
-- **Compact output**: JSON has no indentation, and oversized results are trimmed evenly across items instead of cut off at the end
-- **Bucket-aware batching**: calls run in parallel across Discord rate-limit buckets
-- **Cancellable**: when the client cancels a call, waits and batches stop, and long batches report their progress
+REST handles every action; the gateway WebSocket opens only for live events and closes after 2 minutes idle. Bulk deletes and bans use Discord's real bulk endpoints.
 
 ## Development
 
@@ -166,7 +118,7 @@ cargo test         # unit, tool and stdio tests (no Discord account needed)
 cargo clippy --all-targets -- -D warnings
 ```
 
-Releases: bump the version in `Cargo.toml` and `package.json` (including `optionalDependencies`), then push a `vX.Y.Z` tag. CI builds every platform, attaches the binaries to the GitHub release and publishes to npm.
+Release: bump `Cargo.toml` and `package.json` (incl. `optionalDependencies`), push a `vX.Y.Z` tag; CI builds, attaches binaries and publishes to npm.
 
 ## Notes
 
